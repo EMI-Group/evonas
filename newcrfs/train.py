@@ -11,7 +11,7 @@ import argparse
 import numpy as np
 from tqdm import tqdm
 
-os.environ["CUDA_VISIBLE_DEVICES"]="2,3"
+os.environ["CUDA_VISIBLE_DEVICES"]="0,1"
 
 from tensorboardX import SummaryWriter
 

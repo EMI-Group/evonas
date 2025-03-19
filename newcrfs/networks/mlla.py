@@ -293,9 +293,10 @@ class BasicLayer(nn.Module):
                 x = checkpoint.checkpoint(blk, x)
             else:
                 x = blk(x)
+        before_x = x
         if self.downsample is not None:
             x = self.downsample(x)
-        return x
+        return x, before_x
 
     def extra_repr(self) -> str:
         return f"dim={self.dim}, input_resolution={self.input_resolution}, depth={self.depth}"
@@ -409,9 +410,9 @@ class MLLA(nn.Module):
                                use_checkpoint=use_checkpoint)
             self.layers.append(layer)
 
-        # self.norm = norm_layer(self.num_features)
-        # self.avgpool = nn.AdaptiveAvgPool1d(1)
-        # self.head = nn.Linear(self.num_features, num_classes) if num_classes > 0 else nn.Identity()
+        self.norm = norm_layer(self.num_features)
+        self.avgpool = nn.AdaptiveAvgPool1d(1)
+        self.head = nn.Linear(self.num_features, num_classes) if num_classes > 0 else nn.Identity()
 
         self.apply(self._init_weights)
 
@@ -435,10 +436,9 @@ class MLLA(nn.Module):
         x = self.pos_drop(x)
 
         feats_list = []
-        feats_list.append(x)
         for layer in self.layers:
-            x = layer(x)
-            feats_list.append(x)
+            x, before_x = layer(x)
+            feats_list.append(before_x)
 
         return x, feats_list
 
@@ -588,25 +588,25 @@ def load_pretrained(ckpt_path, model, skip_RoPE=False):
                 state_dict[k] = torch.cat([absolute_pos_embed_pretrained[:, :j, :],
                                            absolute_pos_embed_pretrained_resized], dim=1)
 
-    ### check classifier, if not match, then re-init classifier to zero
-    # head_bias_pretrained = state_dict['head.bias']
-    # Nc1 = head_bias_pretrained.shape[0]
-    # Nc2 = model.head.bias.shape[0]
-    # if (Nc1 != Nc2):
-    #     if Nc1 == 21841 and Nc2 == 1000:
-    #         # logger.info("loading ImageNet-22K weight to ImageNet-1K ......")
-    #         map22kto1k_path = f'data/map22kto1k.txt'
-    #         with open(map22kto1k_path) as f:
-    #             map22kto1k = f.readlines()
-    #         map22kto1k = [int(id22k.strip()) for id22k in map22kto1k]
-    #         state_dict['head.weight'] = state_dict['head.weight'][map22kto1k, :]
-    #         state_dict['head.bias'] = state_dict['head.bias'][map22kto1k]
-    #     else:
-    #         torch.nn.init.constant_(model.head.bias, 0.)
-    #         torch.nn.init.constant_(model.head.weight, 0.)
-    #         del state_dict['head.weight']
-    #         del state_dict['head.bias']
-    #         # logger.warning(f"Error in loading classifier head, re-init classifier head to 0")
+    # check classifier, if not match, then re-init classifier to zero
+    head_bias_pretrained = state_dict['head.bias']
+    Nc1 = head_bias_pretrained.shape[0]
+    Nc2 = model.head.bias.shape[0]
+    if (Nc1 != Nc2):
+        if Nc1 == 21841 and Nc2 == 1000:
+            # logger.info("loading ImageNet-22K weight to ImageNet-1K ......")
+            map22kto1k_path = f'data/map22kto1k.txt'
+            with open(map22kto1k_path) as f:
+                map22kto1k = f.readlines()
+            map22kto1k = [int(id22k.strip()) for id22k in map22kto1k]
+            state_dict['head.weight'] = state_dict['head.weight'][map22kto1k, :]
+            state_dict['head.bias'] = state_dict['head.bias'][map22kto1k]
+        else:
+            torch.nn.init.constant_(model.head.bias, 0.)
+            torch.nn.init.constant_(model.head.weight, 0.)
+            del state_dict['head.weight']
+            del state_dict['head.bias']
+            # logger.warning(f"Error in loading classifier head, re-init classifier head to 0")
 
     if skip_RoPE:
         state_dict = {k: v for k, v in state_dict.items() if "rope" not in k}

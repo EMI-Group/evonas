@@ -1,15 +1,16 @@
 # paper3_code
 
-2025/3/16 update MLLA + MambaVision for encoder-decoder model with new skip connection
+2025/3/16 update MambaVision-T + MambaVision for encoder-decoder model with new skip connection
 
-MLLA-T(c=[64,128,256,512]) + MambaVision(d=[1,1,1,1]) + new skip
+MambaVision-T(c=[80,160,320,640]) + MambaVision(d=[1,1,1,1]) + 新skip
 
-**d1=0.9676, abs_rel=0.0556**
-
-add part Search Space (mlp_ratio, num_heads)
+|           Model           | Param(M) |   d1   |
+| :-----------------------: | :------: | :----: |
+| MambaVision-T+MambaVision |   61.5   | 0.9630 |
+|    Swin-T+MambaVision     |    88    | 0.9664 |
 
 # TODO
-- Search Space (mamba)
-- SuperNet Training (Knowledge Distillation)
-- NAS Search
-- Retrain
+- [ ] Search Space (mamba)
+- [ ] SuperNet Training (Knowledge Distillation)
+- [ ] NAS Search
+- [ ] Retrain

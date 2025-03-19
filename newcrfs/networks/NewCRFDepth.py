@@ -10,7 +10,6 @@ from .mamba import Block, MambaVisionLayer, MambaVision
 from .mlla import MLLA, load_pretrained
 ########################################################################################################################
 '''MambaVision-T + 新skip连接'''
-'''MLLA + 新skip连接'''
 
 class NewCRFDepth(nn.Module):
     """
@@ -123,7 +122,7 @@ class NewCRFDepth(nn.Module):
         self.mba1 = MambaVisionLayer(dim=in_channels[1], depth=depths[2], num_heads=num_heads[2], window_size=window_size[2], drop_path=drop_path_rate, transformer_blocks=list(range(depths[2]//2+1, depths[2])) if depths[2]%2!=0 else list(range(depths[2]//2, depths[2])))
         self.mba0 = MambaVisionLayer(dim=in_channels[0], depth=depths[3], num_heads=num_heads[3], window_size=window_size[3], drop_path=drop_path_rate, transformer_blocks=list(range(depths[3]//2+1, depths[3])) if depths[3]%2!=0 else list(range(depths[3]//2, depths[3])))
 
-        # self.proj_x3 = nn.Conv2d(embed_dim, in_channels[3], 3, 1, 1)
+        self.proj_x3 = nn.Conv2d(embed_dim, in_channels[3], 3, 1, 1)
         self.proj_out3 = nn.Conv2d(in_channels[3], in_channels[3]*2, 3, 1, 1)
         self.proj_out2 = nn.Conv2d(in_channels[2], in_channels[2]*2, 3, 1, 1)
         self.proj_out1 = nn.Conv2d(in_channels[1], in_channels[1]*2, 3, 1, 1)
@@ -133,11 +132,11 @@ class NewCRFDepth(nn.Module):
         self.disp_head1 = DispHead(input_dim=crf_dims[0])
 
         self.up_mode = 'bilinear'
-        # if self.up_mode == 'mask':
-        #     self.mask_head = nn.Sequential(
-        #         nn.Conv2d(crf_dims[0], 64, 3, padding=1),
-        #         nn.ReLU(inplace=True),
-        #         nn.Conv2d(64, 16*9, 1, padding=0))
+        if self.up_mode == 'mask':
+            self.mask_head = nn.Sequential(
+                nn.Conv2d(crf_dims[0], 64, 3, padding=1),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(64, 16*9, 1, padding=0))
 
         self.min_depth = min_depth
         self.max_depth = max_depth
@@ -168,26 +167,15 @@ class NewCRFDepth(nn.Module):
         return up_disp.reshape(N, 1, 4*H, 4*W)
 
     def forward(self, imgs):
-        Bb, _, Hh, Ww = imgs.shape
         _, feats = self.backbone(imgs)
-        
-        for i in range(len(feats)):  # 恢复feats结构
-            tt = 2**(i+2) if i<4 else 2**(i-1+2)
-            feats[i] = feats[i].permute(0, 2, 1).contiguous().reshape(Bb, -1, Hh//tt, Ww//tt)
 
         # for ii in range(len(feats)):
         #     print(f'feat[{ii}]: {feats[ii].shape}')
         # assert False
-        # feat[0]: torch.Size([8, 64, 88, 304])
-        # feat[1]: torch.Size([8, 128, 44, 152])
-        # feat[2]: torch.Size([8, 256, 22, 76])
-        # feat[3]: torch.Size([8, 512, 11, 38])
-        # feat[4]: torch.Size([8, 512, 11, 38])
-        
         ppm_out = self.decoder(feats[1:])
 
         e3 = self.mba3(ppm_out)
-        e3 = e3 + feats[3]
+        e3 = self.proj_x3(e3) + feats[3]
         e3 = nn.PixelShuffle(2)(self.proj_out3(e3))
 
         e2 = self.mba2(e3)
@@ -206,7 +194,12 @@ class NewCRFDepth(nn.Module):
         # e0: torch.Size([4, 96, 88, 280])
         # assert False,'stop'
 
-        d1 = self.disp_head1(e0, 4)
+        if self.up_mode == 'mask':
+            mask = self.mask_head(e0)
+            d1 = self.disp_head1(e0, 1)
+            d1 = self.upsample_mask(d1, mask)
+        else:
+            d1 = self.disp_head1(e0, 4)
 
         depth = d1 * self.max_depth
 

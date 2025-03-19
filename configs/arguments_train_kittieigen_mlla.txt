@@ -17,7 +17,7 @@
 --do_kb_crop
 --do_random_rotate
 --degree 1.0
---log_directory ./run999_enMlla_deMa_v2.0/
+--log_directory ./runs/run999_enMa_deMa_v2.0/
 --multiprocessing_distributed
 --dist_url tcp://127.0.0.1:2342
 
