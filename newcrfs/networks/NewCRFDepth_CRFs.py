@@ -2,17 +2,19 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .mamba import Block, MambaVisionLayer
+from .swin_transformer import SwinTransformer
 from .newcrf_layers import NewCRF
 from .uper_crf_head import PSP
 
+from .mamba import Block, MambaVisionLayer, MambaVision
+from .mlla import MLLA, load_pretrained
 ########################################################################################################################
-'''
-encoder-decoder = VSSD-MambaVision
-load pretrained weight (on imagenet-1k)
-'''
+'''MambaVision encoder; NeWCRFs decoder'''
 
 class NewCRFDepth(nn.Module):
+    """
+    Depth network based on neural window FC-CRFs architecture.
+    """
     def __init__(self, version=None, inv_depth=False, pretrained=None, 
                     frozen_stages=-1, min_depth=0.1, max_depth=100.0, **kwargs):
         super().__init__()
@@ -25,36 +27,7 @@ class NewCRFDepth(nn.Module):
         # norm_cfg = dict(type='GN', requires_grad=True, num_groups=8)
 
         ### encoder
-        if version == 'VSSD':
-            from .VSSD.mamba2 import Backbone_VMAMBA2
-            self.backbone = Backbone_VMAMBA2(
-                image_size=(352,1120),
-                patch_size=32,
-                in_chans=3,
-                embed_dim=64,
-                depths=[2, 4, 8, 4],
-                num_heads=[2, 4, 8, 16],
-                mlp_ratio=4.0,
-                drop_rate=0.0,
-                drop_path_rate=0.2,
-                simple_downsample=False,
-                simple_patch_embed=False,
-                ssd_expansion=2,
-                ssd_ngroups=1,
-                ssd_chunk_size=256,
-                linear_attn_duality=True,
-                lepe=False,
-                attn_types=['mamba2', 'mamba2', 'mamba2', 'standard'],
-                bidirection=False,
-                d_state=64,
-                ssd_positve_dA=True,
-                # pretrained weight
-                pretrained=pretrained
-            )
-            in_channels = [64, 128, 256, 512]
-
-        elif version == 'MambaVision':
-            from .mamba import Block, MambaVision
+        if version == 'MambaVision':
             model_path = './mambavision_tiny_1k.pth.tar'
             depths = [1, 3, 8, 4]
             num_heads = [2, 4, 8, 16]
@@ -75,9 +48,7 @@ class NewCRFDepth(nn.Module):
                 self.backbone._load_state_dict(model_path)
             
             in_channels = [80, 160, 320, 640]
-
         elif version == 'MLLA':
-            from .mlla import MLLA, load_pretrained
             self.backbone = MLLA(img_size=(352,1216),
                                 patch_size=4,
                                 in_chans=3,
@@ -95,7 +66,6 @@ class NewCRFDepth(nn.Module):
             in_channels = [64, 128, 256, 512]
 
         else:
-            from .swin_transformer import SwinTransformer
             window_size = int(version[-2:])
 
             if version[:-2] == 'base':
@@ -139,24 +109,15 @@ class NewCRFDepth(nn.Module):
             align_corners=False
         )
 
-        crf_dims = [64]
-
         ### decoder
-        drop_path_rate = 0
-        depths = [1,1,1,1]
-        num_heads = [16,8,4,2]  # 无效
-        window_size = [7,14,8,8]  # 无效
+        win = 7
+        crf_dims = [128, 256, 512, 1024]
+        v_dims = [64, 128, 256, embed_dim]
 
-        self.mba3 = MambaVisionLayer(dim=embed_dim, depth=depths[0], num_heads=num_heads[0], window_size=window_size[0], mlp_ratio=4, qkv_bias=True, qk_scale=False, drop=0., attn_drop=0., drop_path=drop_path_rate, transformer_blocks=list(range(depths[0]//2+1, depths[0])) if depths[0]%2!=0 else list(range(depths[0]//2, depths[0])))
-        self.mba2 = MambaVisionLayer(dim=in_channels[2], depth=depths[1], num_heads=num_heads[1], window_size=window_size[1], drop_path=drop_path_rate, transformer_blocks=list(range(depths[1]//2+1, depths[1])) if depths[1]%2!=0 else list(range(depths[1]//2, depths[1])))
-        self.mba1 = MambaVisionLayer(dim=in_channels[1], depth=depths[2], num_heads=num_heads[2], window_size=window_size[2], drop_path=drop_path_rate, transformer_blocks=list(range(depths[2]//2+1, depths[2])) if depths[2]%2!=0 else list(range(depths[2]//2, depths[2])))
-        self.mba0 = MambaVisionLayer(dim=in_channels[0], depth=depths[3], num_heads=num_heads[3], window_size=window_size[3], drop_path=drop_path_rate, transformer_blocks=list(range(depths[3]//2+1, depths[3])) if depths[3]%2!=0 else list(range(depths[3]//2, depths[3])))
-
-        # self.proj_x3 = nn.Conv2d(embed_dim, in_channels[3], 3, 1, 1)
-        self.proj_out3 = nn.Conv2d(in_channels[3], in_channels[3]*2, 3, 1, 1)
-        self.proj_out2 = nn.Conv2d(in_channels[2], in_channels[2]*2, 3, 1, 1)
-        self.proj_out1 = nn.Conv2d(in_channels[1], in_channels[1]*2, 3, 1, 1)
-        self.proj_final = nn.Conv2d(in_channels[0], crf_dims[0], 3, 1, 1)
+        self.crf3 = NewCRF(input_dim=in_channels[3], embed_dim=crf_dims[3], window_size=win, v_dim=v_dims[3], num_heads=32)  # x的输入维度，整体输出维度，窗口大小，v的输入维度，注意力头数
+        self.crf2 = NewCRF(input_dim=in_channels[2], embed_dim=crf_dims[2], window_size=win, v_dim=v_dims[2], num_heads=16)
+        self.crf1 = NewCRF(input_dim=in_channels[1], embed_dim=crf_dims[1], window_size=win, v_dim=v_dims[1], num_heads=8)
+        self.crf0 = NewCRF(input_dim=in_channels[0], embed_dim=crf_dims[0], window_size=win, v_dim=v_dims[0], num_heads=4)
 
         self.decoder = PSP(**decoder_cfg)  # 影响一个点
         self.disp_head1 = DispHead(input_dim=crf_dims[0])
@@ -182,36 +143,46 @@ class NewCRFDepth(nn.Module):
     #     """
     #     self.decoder.init_weights()
         
+
+    def upsample_mask(self, disp, mask):
+        """ Upsample disp [H/4, W/4, 1] -> [H, W, 1] using convex combination """
+        N, _, H, W = disp.shape
+        mask = mask.view(N, 1, 9, 4, 4, H, W)
+        mask = torch.softmax(mask, dim=2)
+
+        up_disp = F.unfold(disp, kernel_size=3, padding=1)
+        up_disp = up_disp.view(N, 1, 9, 1, 1, H, W)
+
+        up_disp = torch.sum(mask * up_disp, dim=2)
+        up_disp = up_disp.permute(0, 1, 4, 2, 5, 3)
+        return up_disp.reshape(N, 1, 4*H, 4*W)
+
     def forward(self, imgs):
-        feats = self.backbone(imgs)
+        _, feats = self.backbone(imgs)
 
         # for ii in range(len(feats)):
         #     print(f'feat[{ii}]: {feats[ii].shape}')
         # assert False
+        ppm_out = self.decoder(feats[1:])
 
-        # feat[0]: (8, 64, 88, 280)  1/4
-        # feat[1]: (8, 128, 44, 140)  1/8
-        # feat[2]: (8, 256, 22, 70)  1/16
-        # feat[3]: (8, 512, 11, 35)  1/32
-        ppm_out = self.decoder(feats)
+        e3 = self.crf3(feats[3], ppm_out)
+        e3 = nn.PixelShuffle(2)(e3)
+        e2 = self.crf2(feats[2], e3)
+        e2 = nn.PixelShuffle(2)(e2)
+        e1 = self.crf1(feats[1], e2)
+        e1 = nn.PixelShuffle(2)(e1)
+        e0 = self.crf0(feats[0], e1)
 
-        e3 = self.mba3(ppm_out)
-        e3 = e3 + feats[3]
-        e3 = nn.PixelShuffle(2)(self.proj_out3(e3))
+        # print('e0:',e0.shape)
+        # e0: torch.Size([4, 96, 88, 280])
+        # assert False,'stop'
 
-        e2 = self.mba2(e3)
-        e2 = e2 + feats[2]
-        e2 = nn.PixelShuffle(2)(self.proj_out2(e2))
-
-        e1 = self.mba1(e2)
-        e1 = e1 + feats[1]
-        e1 = nn.PixelShuffle(2)(self.proj_out1(e1))
-
-        e0 = self.mba0(e1)
-        e0 = e0 + feats[0]
-        e0 = self.proj_final(e0)
-
-        d1 = self.disp_head1(e0, 4)
+        if self.up_mode == 'mask':
+            mask = self.mask_head(e0)
+            d1 = self.disp_head1(e0, 1)
+            d1 = self.upsample_mask(d1, mask)
+        else:
+            d1 = self.disp_head1(e0, 4)
 
         depth = d1 * self.max_depth
 

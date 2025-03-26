@@ -1,7 +1,7 @@
 --mode train
 --model_name newcrfs_kittieigen
---encoder MambaVision
---pretrain ./mambavision_tiny_1k.pth.tar
+--encoder VSSD
+--pretrain ./vssd_tiny_best_ema.pth
 --dataset kitti
 --data_path ../../dataset/KITTI/
 --gt_path ../../dataset/KITTI/data_depth_annotated/
@@ -18,7 +18,7 @@
 --do_kb_crop
 --do_random_rotate
 --degree 1.0
---log_directory ./runs/run999_enMa_deMa_v1.4/
+--log_directory ./runs/run999_enVSSD_deMa_v1.0/
 --multiprocessing_distributed
 --dist_url tcp://127.0.0.1:2349
 

@@ -2,7 +2,9 @@ __pycache__
 swin_tiny_patch4_window7_224.pth
 mambavision_tiny_1k.pth.tar
 MLLA-T.pth
+vssd_tiny_best_ema.pth
 model-*-best_*
 eval
 summaries
 /files
+/runs

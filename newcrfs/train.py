@@ -11,7 +11,7 @@ import argparse
 import numpy as np
 from tqdm import tqdm
 
-os.environ["CUDA_VISIBLE_DEVICES"]="0,1"
+os.environ["CUDA_VISIBLE_DEVICES"]="2,3"
 
 from tensorboardX import SummaryWriter
 
@@ -21,6 +21,7 @@ from networks.NewCRFDepth import NewCRFDepth
 
 # python newcrfs/train.py configs/arguments_train_kittieigen_mba.txt
 # python newcrfs/train.py configs/arguments_train_kittieigen_mlla.txt
+# python newcrfs/train.py configs/arguments_train_kittieigen_vssd.txt
 
 # python newcrfs/train.py configs/arguments_train_nyu.txt
 
@@ -214,8 +215,12 @@ def main_worker(gpu, ngpus_per_node, args):
         model = torch.nn.DataParallel(model)
         model.cuda()
 
+    '''show model'''
+    # with open('./model.log','w') as f:
+    #     f.write(str(model))
+    # assert False,'print model'
     '''show param'''
-    # 计算FLOPs 和 Params     # TODO
+    # 计算FLOPs 和 Params
     '''https://github.com/MrYxJ/calculate-flops.pytorch?tab=readme-ov-file'''
     # print('*'*20, ' calflops ', '*'*20)
     # from calflops import calculate_flops
@@ -344,7 +349,7 @@ def main_worker(gpu, ngpus_per_node, args):
 
             if global_step % 100 == 0:
                 if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
-                    logger.info('[epoch][s/s_per_e/gs]: [{}][{}/{}/{}], lr: {:.12f}, loss: {:.12f}'.format(epoch, step, steps_per_epoch, global_step, current_lr, loss))
+                    logger.info('[epoch][s/s_per_e/gs]: [{}][{}/{}/{}], lr: {:.12f}, loss: {:.12f}'.format(epoch, step, steps_per_epoch, global_step, current_lr, loss.item()))
                     if np.isnan(loss.cpu().item()):
                         logger.info('NaN in loss occurred. Aborting training.')
                         return -1
@@ -361,11 +366,11 @@ def main_worker(gpu, ngpus_per_node, args):
                 # if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
                 #     print("{}".format(args.model_name))
                 print_string = 'GPU: {} | examples/s: {:4.2f} | loss: {:.5f} | var sum: {:.3f} avg: {:.3f} | time elapsed: {:.2f}h | time left: {:.2f}h'
-                logger.info(print_string.format(args.gpu, examples_per_sec, loss, var_sum.item(), var_sum.item()/var_cnt, time_sofar, training_time_left))
+                logger.info(print_string.format(args.gpu, examples_per_sec, loss.item(), var_sum.item(), var_sum.item()/var_cnt, time_sofar, training_time_left))
 
                 if not args.multiprocessing_distributed or (args.multiprocessing_distributed
                                                             and args.rank % ngpus_per_node == 0):
-                    writer.add_scalar('silog_loss', loss, global_step)
+                    writer.add_scalar('silog_loss', loss.item(), global_step)
                     writer.add_scalar('learning_rate', current_lr, global_step)
                     writer.add_scalar('var_average', var_sum.item()/var_cnt, global_step)
                     depth_gt = torch.where(depth_gt < 1e-3, depth_gt * 0 + 1e3, depth_gt)

@@ -3,7 +3,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.checkpoint as checkpoint
 import numpy as np
-from timm.layers import DropPath, to_2tuple, trunc_normal_
+try:
+    from timm.layers import trunc_normal_, DropPath, LayerNorm2d
+except:
+    from timm.models.layers import DropPath, to_2tuple, trunc_normal_
 
 from .newcrf_utils import load_checkpoint
 

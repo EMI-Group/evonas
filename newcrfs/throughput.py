@@ -21,14 +21,14 @@ resolution = 640
 # model = SwinTransformer(**backbone_cfg)
 
 '''MambaVsion-T'''  # Throughput 346 (Group+CAM); Throughput 348 (Orginal)
-from networks.mamba import MambaVision
-model = MambaVision(depths=[1, 3, 8, 4],
-                    num_heads=[2, 4, 8, 16],
-                    window_size=[8, 8, 14, 7],
-                    dim=80,
-                    in_dim=32,
-                    mlp_ratio=4,
-                    drop_path_rate=0.2)
+# from networks.mamba import MambaVision
+# model = MambaVision(depths=[1, 3, 8, 4],
+#                     num_heads=[2, 4, 8, 16],
+#                     window_size=[8, 8, 14, 7],
+#                     dim=80,
+#                     in_dim=32,
+#                     mlp_ratio=4,
+#                     drop_path_rate=0.2)
 
 '''MLLA-T'''  # Throughput 159
 # from networks.mlla import MLLA
@@ -45,6 +45,30 @@ model = MambaVision(depths=[1, 3, 8, 4],
 #             ape=False,
 #             use_checkpoint=False)
 
+'''VSSD-T'''  # Throughput 124
+from networks.VSSD.mamba2 import Backbone_VMAMBA2
+model = Backbone_VMAMBA2(
+    image_size=(640,640),
+    patch_size=32,
+    in_chans=3,
+    embed_dim=64,
+    depths=[2, 4, 8, 4],
+    num_heads=[2, 4, 8, 16],
+    mlp_ratio=4.0,
+    drop_rate=0.0,
+    drop_path_rate=0.2,
+    simple_downsample=False,
+    simple_patch_embed=False,
+    ssd_expansion=2,
+    ssd_ngroups=1,
+    ssd_chunk_size=256,
+    linear_attn_duality=True,
+    lepe=False,
+    attn_types=['mamba2', 'mamba2', 'mamba2', 'standard'],
+    bidirection=False,
+    d_state=64,
+    ssd_positve_dA=True,
+)
 
 input_data = torch.randn((bs, 3, resolution, resolution), device='cuda').cuda()
 input_data = input_data.to(memory_format=torch.channels_last)

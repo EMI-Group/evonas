@@ -13,9 +13,12 @@ import torch
 import torch.nn as nn
 
 import math
-from timm.layers import trunc_normal_, DropPath, LayerNorm2d
+try:
+    from timm.layers import trunc_normal_, DropPath, LayerNorm2d
+except:
+    from timm.models.layers import trunc_normal_, DropPath, LayerNorm2d
 from timm.models.vision_transformer import Mlp, PatchEmbed
-from timm.layers import DropPath, trunc_normal_
+
 import torch.nn.functional as F
 from mamba_ssm.ops.selective_scan_interface import selective_scan_fn
 from einops import rearrange, repeat
@@ -246,7 +249,39 @@ class ConvBlock(nn.Module):
         x = input + self.drop_path(x)
         return x
 
+class MBBlock(nn.Module):
+    def __init__(self, C_in, C_out=None, kernel_size=3, stride=1, expansion=6, drop_path=0.,):
+        super(MBBlock, self).__init__()
+        if C_out is None:
+            C_out = C_in
+        if expansion != 1:
+            self.op = nn.Sequential(
+                nn.Conv2d(C_in, C_in * expansion, 1),
+                nn.BatchNorm2d(C_in * expansion),
+                nn.ReLU6(inplace=True),
+                nn.Conv2d(C_in * expansion, C_in * expansion, kernel_size, stride=stride, padding=1, groups=C_in * expansion),
+                nn.BatchNorm2d(C_in * expansion),
+                nn.ReLU6(inplace=True),
+                nn.Conv2d(C_in * expansion, C_out, 1),
+                nn.BatchNorm2d(C_out),
+            )
+        else:
+            self.op = nn.Sequential(
+                nn.Conv2d(C_in * expansion, C_in * expansion, kernel_size, stride=stride, padding=1, groups=C_in * expansion),
+                nn.BatchNorm2d(C_in * expansion),
+                nn.ReLU6(inplace=True),
+                nn.Conv2d(C_in * expansion, C_out, 1),
+                nn.BatchNorm2d(C_out),
+            )
+        self.res_flag = ((C_in == C_out) and (stride == 1))
+        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
 
+    def forward(self, x):
+        if self.res_flag:
+            return self.drop_path(self.op(x)) + x
+        else:
+            return self.drop_path(self.op(x))
+        
 class MambaVisionMixer(nn.Module):
     def __init__(
         self,

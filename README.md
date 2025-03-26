@@ -1,16 +1,19 @@
 # paper3_code
 
 2025/3/16 update MambaVision-T + MambaVision for encoder-decoder model with new skip connection
+2025/3/26 update VSSD-T + MambaVision for encoder-decoder model
 
-MambaVision-T(c=[80,160,320,640]) + MambaVision(d=[1,1,1,1]) + 新skip
 
 |           Model           | Param(M) |   d1   |
 | :-----------------------: | :------: | :----: |
-| MambaVision-T+MambaVision |   61.5   | 0.9630 |
-|    Swin-T+MambaVision     |    88    | 0.9664 |
+|    Swin-T+MambaVision     |    64    | 0.9664 |
+| MambaVision-T+MambaVision |    62    | 0.9630 |
+|      MILA+MambaVision     |    47    | 0.9675 |
+|    VSSD-T+MambaVision     |    46    |    -   |
 
 # TODO
-- [ ] Search Space (mamba)
+- [ ] Search Space (VSSD)
+    - [ ] add choose (mlp_ratio, dim)
 - [ ] SuperNet Training (Knowledge Distillation)
 - [ ] NAS Search
 - [ ] Retrain
