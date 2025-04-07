@@ -12,8 +12,8 @@
 | MambaVision-T+MambaVision |    62    | 0.9630 |
 |      MILA+MambaVision     |    47    | 0.9675 |
 |    VSSD-T+MambaVision     |    46    | 0.9673 |
-|   *VSSD-T+NeWCRFs(c/2)*   |    45    | 0.9675 |
-
+|    VSSD-T+NeWCRFs(c/2)    |    45    | 0.9675 |
+| **VSSD-T+SP+NeWCRFs(c/2)**|    34    | running |
 # TODO
 - [ ] Search Space (VSSD)
     - [ ] add choose (mlp_ratio, dim)

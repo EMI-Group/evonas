@@ -18,9 +18,9 @@
 --do_kb_crop
 --do_random_rotate
 --degree 1.0
---log_directory ./runs/run999_enVSSD_deCRFs_v/
+--log_directory ./runs/run999_enVSSD_deCRFs_SP/
 --multiprocessing_distributed
---dist_url tcp://127.0.0.1:2341
+--dist_url tcp://127.0.0.1:2349
 
 --log_freq 1000
 --do_online_eval

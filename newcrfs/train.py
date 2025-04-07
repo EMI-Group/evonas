@@ -11,7 +11,7 @@ import argparse
 import numpy as np
 from tqdm import tqdm
 
-os.environ["CUDA_VISIBLE_DEVICES"]="0,1"
+os.environ["CUDA_VISIBLE_DEVICES"]="2,3"
 
 from tensorboardX import SummaryWriter
 
@@ -236,7 +236,7 @@ def main_worker(gpu, ngpus_per_node, args):
         model.cuda()
 
     '''show model'''
-    with open('./max_model.log','w') as f:
+    with open(os.path.join(args.log_directory, 'max_model.log'),'w') as f:
         f.write(str(model))
     # assert False,'print model'
 

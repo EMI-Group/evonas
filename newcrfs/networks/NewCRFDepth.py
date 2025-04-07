@@ -4,12 +4,13 @@ import torch.nn.functional as F
 
 from .mamba import Block, MambaVisionLayer
 from .newcrf_layers import NewCRF
-from .uper_crf_head import PSP
+from .uper_crf_head import PSP, StripPooling
 
 ########################################################################################################################
 '''
 encoder-decoder = VSSD-NeWCRFs (dim/2 of decoder)
 load pretrained weight (on imagenet-1k)
+PPM ==> StripPooling
 '''
 
 class NewCRFDepth(nn.Module):
@@ -31,7 +32,7 @@ class NewCRFDepth(nn.Module):
         if version == 'VSSD':
             from .VSSD.mamba2 import Backbone_VMAMBA2
             self.backbone = Backbone_VMAMBA2(
-                image_size=(352,1120),
+                image_size=(352,1120),  # 需配合数据集
                 patch_size=4,  # 无实际意义
                 in_chans=3,
                 embed_dim=64,
@@ -78,7 +79,7 @@ class NewCRFDepth(nn.Module):
                 self.backbone._load_state_dict(model_path)
             
             in_channels = [80, 160, 320, 640]
-            
+
         elif version == 'MLLA':
             from .mlla import MLLA, load_pretrained
             self.backbone = MLLA(img_size=(352,1216),
@@ -131,16 +132,16 @@ class NewCRFDepth(nn.Module):
             self.backbone = SwinTransformer(**backbone_cfg)
 
         embed_dim = 512
-        decoder_cfg = dict(
-            in_channels=in_channels,
-            in_index=[0, 1, 2, 3],
-            pool_scales=(1, 2, 3, 6),
-            channels=embed_dim,
-            dropout_ratio=0.0,
-            num_classes=32,
-            norm_cfg=norm_cfg,
-            align_corners=False
-        )
+        # decoder_cfg = dict(
+        #     in_channels=in_channels,
+        #     in_index=[0, 1, 2, 3],
+        #     pool_scales=(1, 2, 3, 6),
+        #     channels=embed_dim,
+        #     dropout_ratio=0.0,
+        #     num_classes=32,
+        #     norm_cfg=norm_cfg,
+        #     align_corners=False
+        # )
 
         ### decoder
         win = 7
@@ -152,7 +153,9 @@ class NewCRFDepth(nn.Module):
         self.crf1 = NewCRF(input_dim=in_channels[1], embed_dim=crf_dims[1], window_size=win, v_dim=v_dims[1], num_heads=8)
         self.crf0 = NewCRF(input_dim=in_channels[0], embed_dim=crf_dims[0], window_size=win, v_dim=v_dims[0], num_heads=4)
 
-        self.decoder = PSP(**decoder_cfg)  # 影响一个点
+        # self.decoder = PSP(**decoder_cfg)  # 影响一个点
+        self.PPM = nn.Sequential(StripPooling(in_channels[3], (20,12)),
+                                     StripPooling(in_channels[3], (20,12)))
         self.disp_head1 = DispHead(input_dim=crf_dims[0])
 
         self.up_mode = 'bilinear'
@@ -196,7 +199,7 @@ class NewCRFDepth(nn.Module):
         # for ii in range(len(feats)):
         #     print(f'feat[{ii}]: {feats[ii].shape}')
         # assert False
-        ppm_out = self.decoder(feats)
+        ppm_out = self.PPM(feats[3])
 
         e3 = self.crf3(feats[3], ppm_out)
         e3 = nn.PixelShuffle(2)(e3)
