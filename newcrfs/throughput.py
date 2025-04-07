@@ -1,6 +1,6 @@
 import torch
 import os
-os.environ["CUDA_VISIBLE_DEVICES"]="3"
+os.environ["CUDA_VISIBLE_DEVICES"]="0"
 
 bs = 8
 resolution = 640
@@ -49,7 +49,7 @@ resolution = 640
 from networks.VSSD.mamba2 import Backbone_VMAMBA2
 model = Backbone_VMAMBA2(
     image_size=(640,640),
-    patch_size=32,
+    patch_size=4,
     in_chans=3,
     embed_dim=64,
     depths=[2, 4, 8, 4],

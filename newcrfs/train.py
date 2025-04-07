@@ -11,7 +11,7 @@ import argparse
 import numpy as np
 from tqdm import tqdm
 
-os.environ["CUDA_VISIBLE_DEVICES"]="2,3"
+os.environ["CUDA_VISIBLE_DEVICES"]="0,1"
 
 from tensorboardX import SummaryWriter
 
@@ -25,6 +25,20 @@ from networks.NewCRFDepth import NewCRFDepth
 
 # python newcrfs/train.py configs/arguments_train_nyu.txt
 
+def str2bool(v):
+    """
+    Converts string to bool type; enables command line 
+    arguments in the format of '--arg1 true --arg2 false'
+    """
+    if isinstance(v, bool):
+        return v
+    if v.lower() in ('yes', 'true', 't', 'y', '1'):
+        return True
+    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
+        return False
+    else:
+        raise argparse.ArgumentTypeError('Boolean value expected.')
+    
 parser = argparse.ArgumentParser(description='NeWCRFs PyTorch implementation.', fromfile_prefix_chars='@')
 parser.convert_arg_line_to_args = convert_arg_line_to_args
 
@@ -87,6 +101,7 @@ parser.add_argument('--garg_crop',                             help='if set, cro
 parser.add_argument('--eval_freq',                 type=int,   help='Online evaluation frequency in global steps', default=500)
 parser.add_argument('--eval_summary_directory',    type=str,   help='output directory for eval summary,'
                                                                     'if empty outputs to checkpoint folder', default='')
+parser.add_argument('--dynamic_tanh', type=str2bool, default=False)
 
 if sys.argv.__len__() == 2:
     arg_filename_with_prefix = '@' + sys.argv[1]
@@ -193,6 +208,11 @@ def main_worker(gpu, ngpus_per_node, args):
 
     # NeWCRFs model
     model = NewCRFDepth(version=args.encoder, inv_depth=False, max_depth=args.max_depth, pretrained=args.pretrain)
+    if args.dynamic_tanh:  ### 替换归一化层
+        from networks.dynamic_tanh import convert_ln_to_dyt
+        model = convert_ln_to_dyt(model)
+        logger.info("==> Using dynamic_tanh!")
+
     model.train()
 
     if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
@@ -216,9 +236,10 @@ def main_worker(gpu, ngpus_per_node, args):
         model.cuda()
 
     '''show model'''
-    # with open('./model.log','w') as f:
-    #     f.write(str(model))
+    with open('./max_model.log','w') as f:
+        f.write(str(model))
     # assert False,'print model'
+
     '''show param'''
     # 计算FLOPs 和 Params
     '''https://github.com/MrYxJ/calculate-flops.pytorch?tab=readme-ov-file'''
