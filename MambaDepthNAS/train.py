@@ -11,23 +11,20 @@ import argparse
 import numpy as np
 from tqdm import tqdm
 
-os.environ["CUDA_VISIBLE_DEVICES"]="2,3"
+os.environ["CUDA_VISIBLE_DEVICES"]="0,1"
 
 from tensorboardX import SummaryWriter
 
 from utils import post_process_depth, flip_lr, silog_loss, compute_errors, eval_metrics, \
                        block_print, enable_print, normalize_result, inv_normalize, convert_arg_line_to_args, get_root_logger
-from networks.NewCRFDepth import NewCRFDepth
+from networks.model import MambaDepth
 
 # (choose SpatialMamba) 
 # export PYTHONPATH=$PYTHONPATH:/data/code_yzh/Spatial-Mamba-main/kernels/dwconv2d
 # export PYTHONPATH=$PYTHONPATH:/data/code_yzh/Spatial-Mamba-main/kernels/selective_scan
 
-# python newcrfs/train.py configs/arguments_train_kittieigen_mba.txt
-# python newcrfs/train.py configs/arguments_train_kittieigen_mlla.txt
-# python newcrfs/train.py configs/arguments_train_kittieigen_vssd.txt
+# python MambaDepthNAS/train.py configs/arguments_train_kittieigen_vssd.txt
 
-# python newcrfs/train.py configs/arguments_train_nyu.txt
 
 def str2bool(v):
     """
@@ -43,11 +40,11 @@ def str2bool(v):
     else:
         raise argparse.ArgumentTypeError('Boolean value expected.')
     
-parser = argparse.ArgumentParser(description='NeWCRFs PyTorch implementation.', fromfile_prefix_chars='@')
+parser = argparse.ArgumentParser(description='MambaDepth PyTorch implementation.', fromfile_prefix_chars='@')
 parser.convert_arg_line_to_args = convert_arg_line_to_args
 
 parser.add_argument('--mode',                      type=str,   help='train or test', default='train')
-parser.add_argument('--model_name',                type=str,   help='model name', default='newcrfs')
+parser.add_argument('--model_name',                type=str,   help='model name', default='MambaDepth')
 parser.add_argument('--encoder',                   type=str,   help='type of encoder, base07, large07', default='large07')
 parser.add_argument('--pretrain',                  type=str,   help='path of pretrained encoder', default=None)
 
@@ -210,8 +207,8 @@ def main_worker(gpu, ngpus_per_node, args):
             args.rank = args.rank * ngpus_per_node + gpu
         dist.init_process_group(backend=args.dist_backend, init_method=args.dist_url, world_size=args.world_size, rank=args.rank)
 
-    # NeWCRFs model
-    model = NewCRFDepth(version=args.encoder, inv_depth=False, max_depth=args.max_depth, pretrained=args.pretrain)
+    # MambaDepth model
+    model = MambaDepth(version=args.encoder, inv_depth=False, max_depth=args.max_depth, pretrained=args.pretrain)
     if args.dynamic_tanh:  ### 替换归一化层
         from networks.dynamic_tanh import convert_ln_to_dyt
         model = convert_ln_to_dyt(model)
@@ -474,11 +471,11 @@ def main():
         aux_out_path = os.path.join(args.log_directory, args.model_name)
         networks_savepath = os.path.join(aux_out_path, 'networks')
         dataloaders_savepath = os.path.join(aux_out_path, 'dataloaders')
-        command = 'cp newcrfs/train.py ' + aux_out_path
+        command = 'cp MambaDepthNAS/train.py ' + aux_out_path
         os.system(command)
-        command = 'mkdir -p ' + networks_savepath + ' && cp newcrfs/networks/*.py ' + networks_savepath
+        command = 'mkdir -p ' + networks_savepath + ' && cp MambaDepthNAS/networks/*.py ' + networks_savepath
         os.system(command)
-        command = 'mkdir -p ' + dataloaders_savepath + ' && cp newcrfs/dataloaders/*.py ' + dataloaders_savepath
+        command = 'mkdir -p ' + dataloaders_savepath + ' && cp MambaDepthNAS/dataloaders/*.py ' + dataloaders_savepath
         os.system(command)
 
     torch.cuda.empty_cache()

@@ -7,7 +7,7 @@ import numpy as np
 from tqdm import tqdm
 
 from utils import post_process_depth, flip_lr, compute_errors
-from networks.NewCRFDepth import NewCRFDepth
+from networks.model import MambaDepth
 
 
 def convert_arg_line_to_args(arg_line):
@@ -17,10 +17,10 @@ def convert_arg_line_to_args(arg_line):
         yield arg
 
 
-parser = argparse.ArgumentParser(description='NeWCRFs PyTorch implementation.', fromfile_prefix_chars='@')
+parser = argparse.ArgumentParser(description='MambaDepth PyTorch implementation.', fromfile_prefix_chars='@')
 parser.convert_arg_line_to_args = convert_arg_line_to_args
 
-parser.add_argument('--model_name',                type=str,   help='model name', default='newcrfs')
+parser.add_argument('--model_name',                type=str,   help='model name', default='MambaDepth')
 parser.add_argument('--encoder',                   type=str,   help='type of encoder, base07, large07', default='large07')
 parser.add_argument('--checkpoint_path',           type=str,   help='path to a checkpoint to load', default='')
 
@@ -128,8 +128,8 @@ def eval(model, dataloader_eval, post_process=False):
 
 def main_worker(args):
 
-    # CRF model
-    model = NewCRFDepth(version=args.encoder, inv_depth=False, max_depth=args.max_depth, pretrained=None)
+    # MambaDepth model
+    model = MambaDepth(version=args.encoder, inv_depth=False, max_depth=args.max_depth, pretrained=None)
     model.train()
 
     num_params = sum([np.prod(p.size()) for p in model.parameters()])

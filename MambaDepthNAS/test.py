@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 
 from utils import post_process_depth, flip_lr
-from networks.NewCRFDepth import NewCRFDepth
+from networks.model import MambaDepth
 
 
 def convert_arg_line_to_args(arg_line):
@@ -23,10 +23,10 @@ def convert_arg_line_to_args(arg_line):
         yield arg
 
 
-parser = argparse.ArgumentParser(description='NeWCRFs PyTorch implementation.', fromfile_prefix_chars='@')
+parser = argparse.ArgumentParser(description='MambaDepth PyTorch implementation.', fromfile_prefix_chars='@')
 parser.convert_arg_line_to_args = convert_arg_line_to_args
 
-parser.add_argument('--model_name', type=str, help='model name', default='newcrfs')
+parser.add_argument('--model_name', type=str, help='model name', default='MambaDepth')
 parser.add_argument('--encoder', type=str, help='type of encoder, base07, large07', default='large07')
 parser.add_argument('--data_path', type=str, help='path to the data', required=True)
 parser.add_argument('--filenames_file', type=str, help='path to the filenames text file', required=True)
@@ -65,7 +65,7 @@ def test(params):
     args.mode = 'test'
     dataloader = NewDataLoader(args, 'test')
     
-    model = NewCRFDepth(version='large07', inv_depth=False, max_depth=args.max_depth)
+    model = MambaDepth(version='large07', inv_depth=False, max_depth=args.max_depth)
     model = torch.nn.DataParallel(model)
     
     checkpoint = torch.load(args.checkpoint_path)

@@ -27,12 +27,12 @@ from OpenGL.GL import shaders
 import glm
 
 from utils import post_process_depth, flip_lr
-from networks.NewCRFDepth import NewCRFDepth
+from networks.model import MambaDepth
 
 
 # Argument Parser
-parser = argparse.ArgumentParser(description='NeWCRFs Live 3D')
-parser.add_argument('--model_name',      type=str,   help='model name', default='newcrfs')
+parser = argparse.ArgumentParser(description='MambaDepth Live 3D')
+parser.add_argument('--model_name',      type=str,   help='model name', default='MambaDepth')
 parser.add_argument('--encoder',         type=str,   help='type of encoder, base07, large07', default='large07')
 parser.add_argument('--max_depth',       type=float, help='maximum depth in estimation', default=10)
 parser.add_argument('--checkpoint_path', type=str,   help='path to a checkpoint to load', required=True)
@@ -74,7 +74,7 @@ map1, map2 = cv2.initUndistortRectifyMap(camera_matrix, dist_coeffs, R, new_came
 
 def load_model():
     args.mode = 'test'
-    model = NewCRFDepth(version='large07', inv_depth=False, max_depth=args.max_depth)
+    model = MambaDepth(version='large07', inv_depth=False, max_depth=args.max_depth)
     model = torch.nn.DataParallel(model)
 
     checkpoint = torch.load(args.checkpoint_path)
@@ -167,7 +167,7 @@ class Window(QtWidgets.QWidget):
         mainLayout.addLayout(toolsLayout)
         
         self.setLayout(mainLayout)
-        self.setWindowTitle(self.tr("NeWCRFs Live"))
+        self.setWindowTitle(self.tr("MambaDepth Live"))
         
         # Signals
         self.updateInput.connect(self.update_input)

@@ -2,20 +2,21 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .mamba import Block, MambaVisionLayer
-from .newcrf_layers import NewCRF
+# from .mambaVision import Block, MambaVisionLayer
+# from .newcrf_layers import NewCRF
 from .uper_crf_head import PSP, StripPooling
 
+from .SpaMamba.spatialmamba import SpatialMambaLayer
 ########################################################################################################################
 '''
-encoder-decoder = VSSD-NeWCRFs (dim/2 of decoder)
+encoder-decoder = VSSD-SpatialMamba
 load pretrained weight (on imagenet-1k)
 PPM ==> StripPooling
 '''
 
-class NewCRFDepth(nn.Module):
+class MambaDepth(nn.Module):
     """
-    Depth network based on neural window FC-CRFs architecture.
+    Depth network based on VSSD-T + SpatialMamba.
     """
     def __init__(self, version=None, inv_depth=False, pretrained=None, 
                     frozen_stages=-1, min_depth=0.1, max_depth=100.0, **kwargs):
@@ -58,7 +59,7 @@ class NewCRFDepth(nn.Module):
             in_channels = [64, 128, 256, 512]
 
         elif version == 'MambaVision':
-            from .mamba import Block, MambaVision
+            from .mambaVision import Block, MambaVision
             model_path = './mambavision_tiny_1k.pth.tar'
             depths = [1, 3, 8, 4]
             num_heads = [2, 4, 8, 16]
@@ -145,53 +146,35 @@ class NewCRFDepth(nn.Module):
 
         ### decoder
         win = 7
-        crf_dims = [64, 128, 256, 512]
-        v_dims = [32, 64, 128, embed_dim]
+        final_dims = 64
 
-        self.crf3 = NewCRF(input_dim=in_channels[3], embed_dim=crf_dims[3], window_size=win, v_dim=v_dims[3], num_heads=32)  # x的输入维度，整体输出维度，窗口大小，v的输入维度，注意力头数
-        self.crf2 = NewCRF(input_dim=in_channels[2], embed_dim=crf_dims[2], window_size=win, v_dim=v_dims[2], num_heads=16)
-        self.crf1 = NewCRF(input_dim=in_channels[1], embed_dim=crf_dims[1], window_size=win, v_dim=v_dims[1], num_heads=8)
-        self.crf0 = NewCRF(input_dim=in_channels[0], embed_dim=crf_dims[0], window_size=win, v_dim=v_dims[0], num_heads=4)
+        depths = [1,1,1,1]
 
+        self.spa_mab3 = SpatialMambaLayer(dim=in_channels[3], depth=depths[0], d_state=1, mlp_ratio=4.0)
+        self.spa_mab2 = SpatialMambaLayer(dim=in_channels[2], depth=depths[1], d_state=1, mlp_ratio=4.0)
+        self.spa_mab1 = SpatialMambaLayer(dim=in_channels[1], depth=depths[2], d_state=1, mlp_ratio=4.0)
+        self.spa_mab0 = SpatialMambaLayer(dim=in_channels[0], depth=depths[3], d_state=1, mlp_ratio=4.0)
+
+        self.proj_out3 = nn.Conv2d(in_channels[3], in_channels[3]*2, 3, 1, 1)
+        self.proj_out2 = nn.Conv2d(in_channels[2], in_channels[2]*2, 3, 1, 1)
+        self.proj_out1 = nn.Conv2d(in_channels[1], in_channels[1]*2, 3, 1, 1)
+        self.proj_final = nn.Conv2d(in_channels[0], final_dims, 3, 1, 1)
+        
         # self.decoder = PSP(**decoder_cfg)  # 影响一个点
         self.PPM = nn.Sequential(StripPooling(in_channels[3], (20,12)),
                                      StripPooling(in_channels[3], (20,12)))
-        self.disp_head1 = DispHead(input_dim=crf_dims[0])
+        self.disp_head1 = DispHead(input_dim=final_dims)
 
         self.up_mode = 'bilinear'
         if self.up_mode == 'mask':
             self.mask_head = nn.Sequential(
-                nn.Conv2d(crf_dims[0], 64, 3, padding=1),
+                nn.Conv2d(final_dims, 64, 3, padding=1),
                 nn.ReLU(inplace=True),
                 nn.Conv2d(64, 16*9, 1, padding=0))
 
         self.min_depth = min_depth
         self.max_depth = max_depth
-
-    #     self.init_weights(pretrained=pretrained)
-
-    # def init_weights(self, pretrained=None):
-    #     """Initialize the weights in backbone and heads.
-    #     # 检查了,无实际意义
-    #     Args:
-    #         pretrained (str, optional): Path to pre-trained weights.
-    #             Defaults to None.
-    #     """
-    #     self.decoder.init_weights()
         
-
-    def upsample_mask(self, disp, mask):
-        """ Upsample disp [H/4, W/4, 1] -> [H, W, 1] using convex combination """
-        N, _, H, W = disp.shape
-        mask = mask.view(N, 1, 9, 4, 4, H, W)
-        mask = torch.softmax(mask, dim=2)
-
-        up_disp = F.unfold(disp, kernel_size=3, padding=1)
-        up_disp = up_disp.view(N, 1, 9, 1, 1, H, W)
-
-        up_disp = torch.sum(mask * up_disp, dim=2)
-        up_disp = up_disp.permute(0, 1, 4, 2, 5, 3)
-        return up_disp.reshape(N, 1, 4*H, 4*W)
 
     def forward(self, imgs):
         feats = self.backbone(imgs)
@@ -199,26 +182,26 @@ class NewCRFDepth(nn.Module):
         # for ii in range(len(feats)):
         #     print(f'feat[{ii}]: {feats[ii].shape}')
         # assert False
+
         ppm_out = self.PPM(feats[3])
 
-        e3 = self.crf3(feats[3], ppm_out)
-        e3 = nn.PixelShuffle(2)(e3)
-        e2 = self.crf2(feats[2], e3)
-        e2 = nn.PixelShuffle(2)(e2)
-        e1 = self.crf1(feats[1], e2)
-        e1 = nn.PixelShuffle(2)(e1)
-        e0 = self.crf0(feats[0], e1)
+        e3 = self.spa_mab3(ppm_out)
+        e3 = e3 + feats[3]
+        e3 = nn.PixelShuffle(2)(self.proj_out3(e3))
 
-        # print('e0:',e0.shape)
-        # e0: torch.Size([4, 96, 88, 280])
-        # assert False,'stop'
+        e2 = self.spa_mab2(e3)
+        e2 = e2 + feats[2]
+        e2 = nn.PixelShuffle(2)(self.proj_out2(e2))
 
-        if self.up_mode == 'mask':
-            mask = self.mask_head(e0)
-            d1 = self.disp_head1(e0, 1)
-            d1 = self.upsample_mask(d1, mask)
-        else:
-            d1 = self.disp_head1(e0, 4)
+        e1 = self.spa_mab1(e2)
+        e1 = e1 + feats[1]
+        e1 = nn.PixelShuffle(2)(self.proj_out1(e1))
+
+        e0 = self.spa_mab0(e1)
+        e0 = e0 + feats[0]
+        e0 = self.proj_final(e0)
+
+        d1 = self.disp_head1(e0, 4)
 
         depth = d1 * self.max_depth
 
@@ -238,24 +221,6 @@ class DispHead(nn.Module):
         x = self.sigmoid(self.conv1(x))
         if scale > 1:
             x = upsample(x, scale_factor=scale)
-        return x
-
-
-class DispUnpack(nn.Module):
-    def __init__(self, input_dim=100, hidden_dim=128):
-        super(DispUnpack, self).__init__()
-        self.conv1 = nn.Conv2d(input_dim, hidden_dim, 3, padding=1)
-        self.conv2 = nn.Conv2d(hidden_dim, 16, 3, padding=1)
-        self.relu = nn.ReLU(inplace=True)
-        self.sigmoid = nn.Sigmoid()
-        self.pixel_shuffle = nn.PixelShuffle(4)
-
-    def forward(self, x, output_size):
-        x = self.relu(self.conv1(x))
-        x = self.sigmoid(self.conv2(x)) # [b, 16, h/4, w/4]
-        # x = torch.reshape(x, [x.shape[0], 1, x.shape[2]*4, x.shape[3]*4])
-        x = self.pixel_shuffle(x)
-
         return x
 
 

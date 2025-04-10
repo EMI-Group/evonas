@@ -1,5 +1,5 @@
 --mode train
---model_name newcrfs_kittieigen
+--model_name MambaDepth
 --encoder VSSD
 --pretrain ./vssd_tiny_best_ema.pth
 --dataset kitti
@@ -18,7 +18,7 @@
 --do_kb_crop
 --do_random_rotate
 --degree 1.0
---log_directory ./runs/run999_enVSSD_deSpaMa/
+--log_directory ./runs/run999_MambaDepth/
 --multiprocessing_distributed
 --dist_url tcp://127.0.0.1:2349
 
