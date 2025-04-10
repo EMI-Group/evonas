@@ -6,10 +6,9 @@ from .mamba import Block, MambaVisionLayer
 from .newcrf_layers import NewCRF
 from .uper_crf_head import PSP, StripPooling
 
-from .SpaMamba.spatialmamba import SpatialMambaLayer
 ########################################################################################################################
 '''
-encoder-decoder = VSSD-SpatialMamba
+encoder-decoder = VSSD-NeWCRFs (dim/2 of decoder)
 load pretrained weight (on imagenet-1k)
 PPM ==> StripPooling
 '''
@@ -147,25 +146,13 @@ class NewCRFDepth(nn.Module):
         ### decoder
         win = 7
         crf_dims = [64, 128, 256, 512]
-        # v_dims = [32, 64, 128, embed_dim]
+        v_dims = [32, 64, 128, embed_dim]
 
-        # self.crf3 = NewCRF(input_dim=in_channels[3], embed_dim=crf_dims[3], window_size=win, v_dim=v_dims[3], num_heads=32)  # x的输入维度，整体输出维度，窗口大小，v的输入维度，注意力头数
-        # self.crf2 = NewCRF(input_dim=in_channels[2], embed_dim=crf_dims[2], window_size=win, v_dim=v_dims[2], num_heads=16)
-        # self.crf1 = NewCRF(input_dim=in_channels[1], embed_dim=crf_dims[1], window_size=win, v_dim=v_dims[1], num_heads=8)
-        # self.crf0 = NewCRF(input_dim=in_channels[0], embed_dim=crf_dims[0], window_size=win, v_dim=v_dims[0], num_heads=4)
+        self.crf3 = NewCRF(input_dim=in_channels[3], embed_dim=crf_dims[3], window_size=win, v_dim=v_dims[3], num_heads=32)  # x的输入维度，整体输出维度，窗口大小，v的输入维度，注意力头数
+        self.crf2 = NewCRF(input_dim=in_channels[2], embed_dim=crf_dims[2], window_size=win, v_dim=v_dims[2], num_heads=16)
+        self.crf1 = NewCRF(input_dim=in_channels[1], embed_dim=crf_dims[1], window_size=win, v_dim=v_dims[1], num_heads=8)
+        self.crf0 = NewCRF(input_dim=in_channels[0], embed_dim=crf_dims[0], window_size=win, v_dim=v_dims[0], num_heads=4)
 
-        depths = [1,1,1,1]
-
-        self.spa_mab3 = SpatialMambaLayer(dim=in_channels[3], depth=depths[0], d_state=1, mlp_ratio=4.0)
-        self.spa_mab2 = SpatialMambaLayer(dim=in_channels[2], depth=depths[1], d_state=1, mlp_ratio=4.0)
-        self.spa_mab1 = SpatialMambaLayer(dim=in_channels[1], depth=depths[2], d_state=1, mlp_ratio=4.0)
-        self.spa_mab0 = SpatialMambaLayer(dim=in_channels[0], depth=depths[3], d_state=1, mlp_ratio=4.0)
-
-        self.proj_out3 = nn.Conv2d(in_channels[3], in_channels[3]*2, 3, 1, 1)
-        self.proj_out2 = nn.Conv2d(in_channels[2], in_channels[2]*2, 3, 1, 1)
-        self.proj_out1 = nn.Conv2d(in_channels[1], in_channels[1]*2, 3, 1, 1)
-        self.proj_final = nn.Conv2d(in_channels[0], crf_dims[0], 3, 1, 1)
-        
         # self.decoder = PSP(**decoder_cfg)  # 影响一个点
         self.PPM = nn.Sequential(StripPooling(in_channels[3], (20,12)),
                                      StripPooling(in_channels[3], (20,12)))
@@ -212,26 +199,26 @@ class NewCRFDepth(nn.Module):
         # for ii in range(len(feats)):
         #     print(f'feat[{ii}]: {feats[ii].shape}')
         # assert False
-
         ppm_out = self.PPM(feats[3])
 
-        e3 = self.spa_mab3(ppm_out)
-        e3 = e3 + feats[3]
-        e3 = nn.PixelShuffle(2)(self.proj_out3(e3))
+        e3 = self.crf3(feats[3], ppm_out)
+        e3 = nn.PixelShuffle(2)(e3)
+        e2 = self.crf2(feats[2], e3)
+        e2 = nn.PixelShuffle(2)(e2)
+        e1 = self.crf1(feats[1], e2)
+        e1 = nn.PixelShuffle(2)(e1)
+        e0 = self.crf0(feats[0], e1)
 
-        e2 = self.spa_mab2(e3)
-        e2 = e2 + feats[2]
-        e2 = nn.PixelShuffle(2)(self.proj_out2(e2))
+        # print('e0:',e0.shape)
+        # e0: torch.Size([4, 96, 88, 280])
+        # assert False,'stop'
 
-        e1 = self.spa_mab1(e2)
-        e1 = e1 + feats[1]
-        e1 = nn.PixelShuffle(2)(self.proj_out1(e1))
-
-        e0 = self.spa_mab0(e1)
-        e0 = e0 + feats[0]
-        e0 = self.proj_final(e0)
-
-        d1 = self.disp_head1(e0, 4)
+        if self.up_mode == 'mask':
+            mask = self.mask_head(e0)
+            d1 = self.disp_head1(e0, 1)
+            d1 = self.upsample_mask(d1, mask)
+        else:
+            d1 = self.disp_head1(e0, 4)
 
         depth = d1 * self.max_depth
 

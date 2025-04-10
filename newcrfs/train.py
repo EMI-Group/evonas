@@ -19,6 +19,10 @@ from utils import post_process_depth, flip_lr, silog_loss, compute_errors, eval_
                        block_print, enable_print, normalize_result, inv_normalize, convert_arg_line_to_args, get_root_logger
 from networks.NewCRFDepth import NewCRFDepth
 
+# (choose SpatialMamba) 
+# export PYTHONPATH=$PYTHONPATH:/data/code_yzh/Spatial-Mamba-main/kernels/dwconv2d
+# export PYTHONPATH=$PYTHONPATH:/data/code_yzh/Spatial-Mamba-main/kernels/selective_scan
+
 # python newcrfs/train.py configs/arguments_train_kittieigen_mba.txt
 # python newcrfs/train.py configs/arguments_train_kittieigen_mlla.txt
 # python newcrfs/train.py configs/arguments_train_kittieigen_vssd.txt
