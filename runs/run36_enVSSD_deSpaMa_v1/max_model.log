@@ -1,0 +1,672 @@
+DistributedDataParallel(
+  (module): NewCRFDepth(
+    (backbone): Backbone_VMAMBA2(
+      (patch_embed): Stem(
+        (conv1): ConvLayer(
+          (conv): Conv2d(3, 32, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1), bias=False)
+          (norm): BatchNorm2d(32, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+          (act): ReLU()
+        )
+        (conv2): Sequential(
+          (0): ConvLayer(
+            (conv): Conv2d(32, 32, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+            (norm): BatchNorm2d(32, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+            (act): ReLU()
+          )
+          (1): ConvLayer(
+            (conv): Conv2d(32, 32, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+            (norm): BatchNorm2d(32, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+          )
+        )
+        (conv3): Sequential(
+          (0): ConvLayer(
+            (conv): Conv2d(32, 256, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1), bias=False)
+            (norm): BatchNorm2d(256, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+            (act): ReLU()
+          )
+          (1): ConvLayer(
+            (conv): Conv2d(256, 64, kernel_size=(1, 1), stride=(1, 1), bias=False)
+            (norm): BatchNorm2d(64, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+          )
+        )
+      )
+      (pos_drop): Dropout(p=0.0, inplace=False)
+      (layers): ModuleList(
+        (0): BasicLayer(
+          dim=64, input_resolution=(56, 56), depth=2
+          (blocks): ModuleList(
+            (0): VMAMBA2Block(
+              (cpe1): Conv2d(64, 64, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=64)
+              (norm1): LayerNorm((64,), eps=1e-05, elementwise_affine=True)
+              (attn): Mamba2(
+                (in_proj): Linear(in_features=64, out_features=386, bias=False)
+                (conv2d): Conv2d(256, 256, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=256)
+                (act): SiLU()
+                (norm): LayerNorm((128,), eps=1e-05, elementwise_affine=True)
+                (out_proj): Linear(in_features=128, out_features=64, bias=False)
+              )
+              (drop_path): Identity()
+              (cpe2): Conv2d(64, 64, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=64)
+              (norm2): LayerNorm((64,), eps=1e-05, elementwise_affine=True)
+              (mlp): Mlp(
+                (fc1): Linear(in_features=64, out_features=256, bias=True)
+                (act): GELU(approximate='none')
+                (fc2): Linear(in_features=256, out_features=64, bias=True)
+                (drop): Dropout(p=0.0, inplace=False)
+              )
+            )
+            (1): VMAMBA2Block(
+              (cpe1): Conv2d(64, 64, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=64)
+              (norm1): LayerNorm((64,), eps=1e-05, elementwise_affine=True)
+              (attn): Mamba2(
+                (in_proj): Linear(in_features=64, out_features=386, bias=False)
+                (conv2d): Conv2d(256, 256, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=256)
+                (act): SiLU()
+                (norm): LayerNorm((128,), eps=1e-05, elementwise_affine=True)
+                (out_proj): Linear(in_features=128, out_features=64, bias=False)
+              )
+              (drop_path): timm.DropPath(0.0117647061124444)
+              (cpe2): Conv2d(64, 64, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=64)
+              (norm2): LayerNorm((64,), eps=1e-05, elementwise_affine=True)
+              (mlp): Mlp(
+                (fc1): Linear(in_features=64, out_features=256, bias=True)
+                (act): GELU(approximate='none')
+                (fc2): Linear(in_features=256, out_features=64, bias=True)
+                (drop): Dropout(p=0.0, inplace=False)
+              )
+            )
+          )
+          (downsample): PatchMerging(
+            (conv): Sequential(
+              (0): ConvLayer(
+                (conv): Conv2d(64, 512, kernel_size=(1, 1), stride=(1, 1))
+                (act): ReLU()
+              )
+              (1): ConvLayer(
+                (conv): Conv2d(512, 512, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1), groups=512)
+                (act): ReLU()
+              )
+              (2): ConvLayer(
+                (conv): Conv2d(512, 128, kernel_size=(1, 1), stride=(1, 1))
+                (norm): BatchNorm2d(128, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+              )
+            )
+          )
+        )
+        (1): BasicLayer(
+          dim=128, input_resolution=(28, 28), depth=4
+          (blocks): ModuleList(
+            (0): VMAMBA2Block(
+              (cpe1): Conv2d(128, 128, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=128)
+              (norm1): LayerNorm((128,), eps=1e-05, elementwise_affine=True)
+              (attn): Mamba2(
+                (in_proj): Linear(in_features=128, out_features=644, bias=False)
+                (conv2d): Conv2d(384, 384, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=384)
+                (act): SiLU()
+                (norm): LayerNorm((256,), eps=1e-05, elementwise_affine=True)
+                (out_proj): Linear(in_features=256, out_features=128, bias=False)
+              )
+              (drop_path): timm.DropPath(0.0235294122248888)
+              (cpe2): Conv2d(128, 128, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=128)
+              (norm2): LayerNorm((128,), eps=1e-05, elementwise_affine=True)
+              (mlp): Mlp(
+                (fc1): Linear(in_features=128, out_features=512, bias=True)
+                (act): GELU(approximate='none')
+                (fc2): Linear(in_features=512, out_features=128, bias=True)
+                (drop): Dropout(p=0.0, inplace=False)
+              )
+            )
+            (1): VMAMBA2Block(
+              (cpe1): Conv2d(128, 128, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=128)
+              (norm1): LayerNorm((128,), eps=1e-05, elementwise_affine=True)
+              (attn): Mamba2(
+                (in_proj): Linear(in_features=128, out_features=644, bias=False)
+                (conv2d): Conv2d(384, 384, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=384)
+                (act): SiLU()
+                (norm): LayerNorm((256,), eps=1e-05, elementwise_affine=True)
+                (out_proj): Linear(in_features=256, out_features=128, bias=False)
+              )
+              (drop_path): timm.DropPath(0.03529411926865578)
+              (cpe2): Conv2d(128, 128, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=128)
+              (norm2): LayerNorm((128,), eps=1e-05, elementwise_affine=True)
+              (mlp): Mlp(
+                (fc1): Linear(in_features=128, out_features=512, bias=True)
+                (act): GELU(approximate='none')
+                (fc2): Linear(in_features=512, out_features=128, bias=True)
+                (drop): Dropout(p=0.0, inplace=False)
+              )
+            )
+            (2): VMAMBA2Block(
+              (cpe1): Conv2d(128, 128, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=128)
+              (norm1): LayerNorm((128,), eps=1e-05, elementwise_affine=True)
+              (attn): Mamba2(
+                (in_proj): Linear(in_features=128, out_features=644, bias=False)
+                (conv2d): Conv2d(384, 384, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=384)
+                (act): SiLU()
+                (norm): LayerNorm((256,), eps=1e-05, elementwise_affine=True)
+                (out_proj): Linear(in_features=256, out_features=128, bias=False)
+              )
+              (drop_path): timm.DropPath(0.0470588244497776)
+              (cpe2): Conv2d(128, 128, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=128)
+              (norm2): LayerNorm((128,), eps=1e-05, elementwise_affine=True)
+              (mlp): Mlp(
+                (fc1): Linear(in_features=128, out_features=512, bias=True)
+                (act): GELU(approximate='none')
+                (fc2): Linear(in_features=512, out_features=128, bias=True)
+                (drop): Dropout(p=0.0, inplace=False)
+              )
+            )
+            (3): VMAMBA2Block(
+              (cpe1): Conv2d(128, 128, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=128)
+              (norm1): LayerNorm((128,), eps=1e-05, elementwise_affine=True)
+              (attn): Mamba2(
+                (in_proj): Linear(in_features=128, out_features=644, bias=False)
+                (conv2d): Conv2d(384, 384, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=384)
+                (act): SiLU()
+                (norm): LayerNorm((256,), eps=1e-05, elementwise_affine=True)
+                (out_proj): Linear(in_features=256, out_features=128, bias=False)
+              )
+              (drop_path): timm.DropPath(0.05882352963089943)
+              (cpe2): Conv2d(128, 128, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=128)
+              (norm2): LayerNorm((128,), eps=1e-05, elementwise_affine=True)
+              (mlp): Mlp(
+                (fc1): Linear(in_features=128, out_features=512, bias=True)
+                (act): GELU(approximate='none')
+                (fc2): Linear(in_features=512, out_features=128, bias=True)
+                (drop): Dropout(p=0.0, inplace=False)
+              )
+            )
+          )
+          (downsample): PatchMerging(
+            (conv): Sequential(
+              (0): ConvLayer(
+                (conv): Conv2d(128, 1024, kernel_size=(1, 1), stride=(1, 1))
+                (act): ReLU()
+              )
+              (1): ConvLayer(
+                (conv): Conv2d(1024, 1024, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1), groups=1024)
+                (act): ReLU()
+              )
+              (2): ConvLayer(
+                (conv): Conv2d(1024, 256, kernel_size=(1, 1), stride=(1, 1))
+                (norm): BatchNorm2d(256, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+              )
+            )
+          )
+        )
+        (2): BasicLayer(
+          dim=256, input_resolution=(14, 14), depth=8
+          (blocks): ModuleList(
+            (0): VMAMBA2Block(
+              (cpe1): Conv2d(256, 256, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=256)
+              (norm1): LayerNorm((256,), eps=1e-05, elementwise_affine=True)
+              (attn): Mamba2(
+                (in_proj): Linear(in_features=256, out_features=1160, bias=False)
+                (conv2d): Conv2d(640, 640, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=640)
+                (act): SiLU()
+                (norm): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
+                (out_proj): Linear(in_features=512, out_features=256, bias=False)
+              )
+              (drop_path): timm.DropPath(0.07058823853731155)
+              (cpe2): Conv2d(256, 256, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=256)
+              (norm2): LayerNorm((256,), eps=1e-05, elementwise_affine=True)
+              (mlp): Mlp(
+                (fc1): Linear(in_features=256, out_features=1024, bias=True)
+                (act): GELU(approximate='none')
+                (fc2): Linear(in_features=1024, out_features=256, bias=True)
+                (drop): Dropout(p=0.0, inplace=False)
+              )
+            )
+            (1): VMAMBA2Block(
+              (cpe1): Conv2d(256, 256, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=256)
+              (norm1): LayerNorm((256,), eps=1e-05, elementwise_affine=True)
+              (attn): Mamba2(
+                (in_proj): Linear(in_features=256, out_features=1160, bias=False)
+                (conv2d): Conv2d(640, 640, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=640)
+                (act): SiLU()
+                (norm): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
+                (out_proj): Linear(in_features=512, out_features=256, bias=False)
+              )
+              (drop_path): timm.DropPath(0.08235294371843338)
+              (cpe2): Conv2d(256, 256, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=256)
+              (norm2): LayerNorm((256,), eps=1e-05, elementwise_affine=True)
+              (mlp): Mlp(
+                (fc1): Linear(in_features=256, out_features=1024, bias=True)
+                (act): GELU(approximate='none')
+                (fc2): Linear(in_features=1024, out_features=256, bias=True)
+                (drop): Dropout(p=0.0, inplace=False)
+              )
+            )
+            (2): VMAMBA2Block(
+              (cpe1): Conv2d(256, 256, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=256)
+              (norm1): LayerNorm((256,), eps=1e-05, elementwise_affine=True)
+              (attn): Mamba2(
+                (in_proj): Linear(in_features=256, out_features=1160, bias=False)
+                (conv2d): Conv2d(640, 640, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=640)
+                (act): SiLU()
+                (norm): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
+                (out_proj): Linear(in_features=512, out_features=256, bias=False)
+              )
+              (drop_path): timm.DropPath(0.0941176488995552)
+              (cpe2): Conv2d(256, 256, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=256)
+              (norm2): LayerNorm((256,), eps=1e-05, elementwise_affine=True)
+              (mlp): Mlp(
+                (fc1): Linear(in_features=256, out_features=1024, bias=True)
+                (act): GELU(approximate='none')
+                (fc2): Linear(in_features=1024, out_features=256, bias=True)
+                (drop): Dropout(p=0.0, inplace=False)
+              )
+            )
+            (3): VMAMBA2Block(
+              (cpe1): Conv2d(256, 256, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=256)
+              (norm1): LayerNorm((256,), eps=1e-05, elementwise_affine=True)
+              (attn): Mamba2(
+                (in_proj): Linear(in_features=256, out_features=1160, bias=False)
+                (conv2d): Conv2d(640, 640, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=640)
+                (act): SiLU()
+                (norm): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
+                (out_proj): Linear(in_features=512, out_features=256, bias=False)
+              )
+              (drop_path): timm.DropPath(0.10588235408067703)
+              (cpe2): Conv2d(256, 256, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=256)
+              (norm2): LayerNorm((256,), eps=1e-05, elementwise_affine=True)
+              (mlp): Mlp(
+                (fc1): Linear(in_features=256, out_features=1024, bias=True)
+                (act): GELU(approximate='none')
+                (fc2): Linear(in_features=1024, out_features=256, bias=True)
+                (drop): Dropout(p=0.0, inplace=False)
+              )
+            )
+            (4): VMAMBA2Block(
+              (cpe1): Conv2d(256, 256, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=256)
+              (norm1): LayerNorm((256,), eps=1e-05, elementwise_affine=True)
+              (attn): Mamba2(
+                (in_proj): Linear(in_features=256, out_features=1160, bias=False)
+                (conv2d): Conv2d(640, 640, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=640)
+                (act): SiLU()
+                (norm): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
+                (out_proj): Linear(in_features=512, out_features=256, bias=False)
+              )
+              (drop_path): timm.DropPath(0.11764705926179886)
+              (cpe2): Conv2d(256, 256, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=256)
+              (norm2): LayerNorm((256,), eps=1e-05, elementwise_affine=True)
+              (mlp): Mlp(
+                (fc1): Linear(in_features=256, out_features=1024, bias=True)
+                (act): GELU(approximate='none')
+                (fc2): Linear(in_features=1024, out_features=256, bias=True)
+                (drop): Dropout(p=0.0, inplace=False)
+              )
+            )
+            (5): VMAMBA2Block(
+              (cpe1): Conv2d(256, 256, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=256)
+              (norm1): LayerNorm((256,), eps=1e-05, elementwise_affine=True)
+              (attn): Mamba2(
+                (in_proj): Linear(in_features=256, out_features=1160, bias=False)
+                (conv2d): Conv2d(640, 640, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=640)
+                (act): SiLU()
+                (norm): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
+                (out_proj): Linear(in_features=512, out_features=256, bias=False)
+              )
+              (drop_path): timm.DropPath(0.12941177189350128)
+              (cpe2): Conv2d(256, 256, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=256)
+              (norm2): LayerNorm((256,), eps=1e-05, elementwise_affine=True)
+              (mlp): Mlp(
+                (fc1): Linear(in_features=256, out_features=1024, bias=True)
+                (act): GELU(approximate='none')
+                (fc2): Linear(in_features=1024, out_features=256, bias=True)
+                (drop): Dropout(p=0.0, inplace=False)
+              )
+            )
+            (6): VMAMBA2Block(
+              (cpe1): Conv2d(256, 256, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=256)
+              (norm1): LayerNorm((256,), eps=1e-05, elementwise_affine=True)
+              (attn): Mamba2(
+                (in_proj): Linear(in_features=256, out_features=1160, bias=False)
+                (conv2d): Conv2d(640, 640, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=640)
+                (act): SiLU()
+                (norm): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
+                (out_proj): Linear(in_features=512, out_features=256, bias=False)
+              )
+              (drop_path): timm.DropPath(0.1411764770746231)
+              (cpe2): Conv2d(256, 256, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=256)
+              (norm2): LayerNorm((256,), eps=1e-05, elementwise_affine=True)
+              (mlp): Mlp(
+                (fc1): Linear(in_features=256, out_features=1024, bias=True)
+                (act): GELU(approximate='none')
+                (fc2): Linear(in_features=1024, out_features=256, bias=True)
+                (drop): Dropout(p=0.0, inplace=False)
+              )
+            )
+            (7): VMAMBA2Block(
+              (cpe1): Conv2d(256, 256, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=256)
+              (norm1): LayerNorm((256,), eps=1e-05, elementwise_affine=True)
+              (attn): Mamba2(
+                (in_proj): Linear(in_features=256, out_features=1160, bias=False)
+                (conv2d): Conv2d(640, 640, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=640)
+                (act): SiLU()
+                (norm): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
+                (out_proj): Linear(in_features=512, out_features=256, bias=False)
+              )
+              (drop_path): timm.DropPath(0.15294118225574493)
+              (cpe2): Conv2d(256, 256, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=256)
+              (norm2): LayerNorm((256,), eps=1e-05, elementwise_affine=True)
+              (mlp): Mlp(
+                (fc1): Linear(in_features=256, out_features=1024, bias=True)
+                (act): GELU(approximate='none')
+                (fc2): Linear(in_features=1024, out_features=256, bias=True)
+                (drop): Dropout(p=0.0, inplace=False)
+              )
+            )
+          )
+          (downsample): PatchMerging(
+            (conv): Sequential(
+              (0): ConvLayer(
+                (conv): Conv2d(256, 2048, kernel_size=(1, 1), stride=(1, 1))
+                (act): ReLU()
+              )
+              (1): ConvLayer(
+                (conv): Conv2d(2048, 2048, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1), groups=2048)
+                (act): ReLU()
+              )
+              (2): ConvLayer(
+                (conv): Conv2d(2048, 512, kernel_size=(1, 1), stride=(1, 1))
+                (norm): BatchNorm2d(512, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+              )
+            )
+          )
+        )
+        (3): BasicLayer(
+          dim=512, input_resolution=(7, 7), depth=4
+          (blocks): ModuleList(
+            (0): VMAMBA2Block(
+              (cpe1): Conv2d(512, 512, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=512)
+              (norm1): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
+              (attn): StandardAttention(
+                (to_qkv): Linear(in_features=512, out_features=1536, bias=False)
+                (to_out): Linear(in_features=512, out_features=512, bias=True)
+                (dropout): Dropout(p=0.0, inplace=False)
+              )
+              (drop_path): timm.DropPath(0.16470588743686676)
+              (cpe2): Conv2d(512, 512, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=512)
+              (norm2): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
+              (mlp): Mlp(
+                (fc1): Linear(in_features=512, out_features=2048, bias=True)
+                (act): GELU(approximate='none')
+                (fc2): Linear(in_features=2048, out_features=512, bias=True)
+                (drop): Dropout(p=0.0, inplace=False)
+              )
+            )
+            (1): VMAMBA2Block(
+              (cpe1): Conv2d(512, 512, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=512)
+              (norm1): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
+              (attn): StandardAttention(
+                (to_qkv): Linear(in_features=512, out_features=1536, bias=False)
+                (to_out): Linear(in_features=512, out_features=512, bias=True)
+                (dropout): Dropout(p=0.0, inplace=False)
+              )
+              (drop_path): timm.DropPath(0.1764705926179886)
+              (cpe2): Conv2d(512, 512, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=512)
+              (norm2): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
+              (mlp): Mlp(
+                (fc1): Linear(in_features=512, out_features=2048, bias=True)
+                (act): GELU(approximate='none')
+                (fc2): Linear(in_features=2048, out_features=512, bias=True)
+                (drop): Dropout(p=0.0, inplace=False)
+              )
+            )
+            (2): VMAMBA2Block(
+              (cpe1): Conv2d(512, 512, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=512)
+              (norm1): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
+              (attn): StandardAttention(
+                (to_qkv): Linear(in_features=512, out_features=1536, bias=False)
+                (to_out): Linear(in_features=512, out_features=512, bias=True)
+                (dropout): Dropout(p=0.0, inplace=False)
+              )
+              (drop_path): timm.DropPath(0.1882352977991104)
+              (cpe2): Conv2d(512, 512, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=512)
+              (norm2): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
+              (mlp): Mlp(
+                (fc1): Linear(in_features=512, out_features=2048, bias=True)
+                (act): GELU(approximate='none')
+                (fc2): Linear(in_features=2048, out_features=512, bias=True)
+                (drop): Dropout(p=0.0, inplace=False)
+              )
+            )
+            (3): VMAMBA2Block(
+              (cpe1): Conv2d(512, 512, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=512)
+              (norm1): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
+              (attn): StandardAttention(
+                (to_qkv): Linear(in_features=512, out_features=1536, bias=False)
+                (to_out): Linear(in_features=512, out_features=512, bias=True)
+                (dropout): Dropout(p=0.0, inplace=False)
+              )
+              (drop_path): timm.DropPath(0.20000000298023224)
+              (cpe2): Conv2d(512, 512, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=512)
+              (norm2): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
+              (mlp): Mlp(
+                (fc1): Linear(in_features=512, out_features=2048, bias=True)
+                (act): GELU(approximate='none')
+                (fc2): Linear(in_features=2048, out_features=512, bias=True)
+                (drop): Dropout(p=0.0, inplace=False)
+              )
+            )
+          )
+        )
+      )
+      (outnorm0): LayerNorm((64,), eps=1e-05, elementwise_affine=True)
+      (outnorm1): LayerNorm((128,), eps=1e-05, elementwise_affine=True)
+      (outnorm2): LayerNorm((256,), eps=1e-05, elementwise_affine=True)
+      (outnorm3): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
+    )
+    (spa_mab3): SpatialMambaLayer(
+      (blocks): ModuleList(
+        (0): SpatialMambaBlock(
+          (cpe1): Conv2d(512, 512, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=512)
+          (ln_1): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
+          (self_attention): StructureAwareSSM(
+            (in_proj): Linear(in_features=512, out_features=2048, bias=False)
+            (conv2d): Conv2d(1024, 1024, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=1024)
+            (act): SiLU()
+            (state_fusion): StateFusion()
+            (out_norm): LayerNorm((1024,), eps=1e-05, elementwise_affine=True)
+            (out_proj): Linear(in_features=1024, out_features=512, bias=False)
+          )
+          (drop_path): timm.DropPath(0.0)
+          (cpe2): Conv2d(512, 512, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=512)
+          (ln_2): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
+          (mlp): MLP(
+            (fc1): Linear(in_features=512, out_features=2048, bias=True)
+            (act): GELU(approximate='none')
+            (fc2): Linear(in_features=2048, out_features=512, bias=True)
+            (drop): Dropout(p=0.0, inplace=False)
+          )
+        )
+      )
+    )
+    (spa_mab2): SpatialMambaLayer(
+      (blocks): ModuleList(
+        (0): SpatialMambaBlock(
+          (cpe1): Conv2d(256, 256, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=256)
+          (ln_1): LayerNorm((256,), eps=1e-05, elementwise_affine=True)
+          (self_attention): StructureAwareSSM(
+            (in_proj): Linear(in_features=256, out_features=1024, bias=False)
+            (conv2d): Conv2d(512, 512, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=512)
+            (act): SiLU()
+            (state_fusion): StateFusion()
+            (out_norm): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
+            (out_proj): Linear(in_features=512, out_features=256, bias=False)
+          )
+          (drop_path): timm.DropPath(0.0)
+          (cpe2): Conv2d(256, 256, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=256)
+          (ln_2): LayerNorm((256,), eps=1e-05, elementwise_affine=True)
+          (mlp): MLP(
+            (fc1): Linear(in_features=256, out_features=1024, bias=True)
+            (act): GELU(approximate='none')
+            (fc2): Linear(in_features=1024, out_features=256, bias=True)
+            (drop): Dropout(p=0.0, inplace=False)
+          )
+        )
+      )
+    )
+    (spa_mab1): SpatialMambaLayer(
+      (blocks): ModuleList(
+        (0): SpatialMambaBlock(
+          (cpe1): Conv2d(128, 128, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=128)
+          (ln_1): LayerNorm((128,), eps=1e-05, elementwise_affine=True)
+          (self_attention): StructureAwareSSM(
+            (in_proj): Linear(in_features=128, out_features=512, bias=False)
+            (conv2d): Conv2d(256, 256, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=256)
+            (act): SiLU()
+            (state_fusion): StateFusion()
+            (out_norm): LayerNorm((256,), eps=1e-05, elementwise_affine=True)
+            (out_proj): Linear(in_features=256, out_features=128, bias=False)
+          )
+          (drop_path): timm.DropPath(0.0)
+          (cpe2): Conv2d(128, 128, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=128)
+          (ln_2): LayerNorm((128,), eps=1e-05, elementwise_affine=True)
+          (mlp): MLP(
+            (fc1): Linear(in_features=128, out_features=512, bias=True)
+            (act): GELU(approximate='none')
+            (fc2): Linear(in_features=512, out_features=128, bias=True)
+            (drop): Dropout(p=0.0, inplace=False)
+          )
+        )
+      )
+    )
+    (spa_mab0): SpatialMambaLayer(
+      (blocks): ModuleList(
+        (0): SpatialMambaBlock(
+          (cpe1): Conv2d(64, 64, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=64)
+          (ln_1): LayerNorm((64,), eps=1e-05, elementwise_affine=True)
+          (self_attention): StructureAwareSSM(
+            (in_proj): Linear(in_features=64, out_features=256, bias=False)
+            (conv2d): Conv2d(128, 128, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=128)
+            (act): SiLU()
+            (state_fusion): StateFusion()
+            (out_norm): LayerNorm((128,), eps=1e-05, elementwise_affine=True)
+            (out_proj): Linear(in_features=128, out_features=64, bias=False)
+          )
+          (drop_path): timm.DropPath(0.0)
+          (cpe2): Conv2d(64, 64, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=64)
+          (ln_2): LayerNorm((64,), eps=1e-05, elementwise_affine=True)
+          (mlp): MLP(
+            (fc1): Linear(in_features=64, out_features=256, bias=True)
+            (act): GELU(approximate='none')
+            (fc2): Linear(in_features=256, out_features=64, bias=True)
+            (drop): Dropout(p=0.0, inplace=False)
+          )
+        )
+      )
+    )
+    (proj_out3): Conv2d(512, 1024, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
+    (proj_out2): Conv2d(256, 512, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
+    (proj_out1): Conv2d(128, 256, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
+    (proj_final): Conv2d(64, 64, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
+    (PPM): Sequential(
+      (0): StripPooling(
+        (pool1): AdaptiveAvgPool2d(output_size=20)
+        (pool2): AdaptiveAvgPool2d(output_size=12)
+        (pool3): AdaptiveAvgPool2d(output_size=(1, None))
+        (pool4): AdaptiveAvgPool2d(output_size=(None, 1))
+        (conv1_1): Sequential(
+          (0): Conv2d(512, 128, kernel_size=(1, 1), stride=(1, 1), bias=False)
+          (1): BatchNorm2d(128, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+          (2): ReLU(inplace=True)
+        )
+        (conv1_2): Sequential(
+          (0): Conv2d(512, 128, kernel_size=(1, 1), stride=(1, 1), bias=False)
+          (1): BatchNorm2d(128, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+          (2): ReLU(inplace=True)
+        )
+        (conv2_0): Sequential(
+          (0): Conv2d(128, 128, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+          (1): BatchNorm2d(128, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        )
+        (conv2_1): Sequential(
+          (0): Conv2d(128, 128, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+          (1): BatchNorm2d(128, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        )
+        (conv2_2): Sequential(
+          (0): Conv2d(128, 128, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+          (1): BatchNorm2d(128, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        )
+        (conv2_3): Sequential(
+          (0): Conv2d(128, 128, kernel_size=(1, 3), stride=(1, 1), padding=(0, 1), bias=False)
+          (1): BatchNorm2d(128, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        )
+        (conv2_4): Sequential(
+          (0): Conv2d(128, 128, kernel_size=(3, 1), stride=(1, 1), padding=(1, 0), bias=False)
+          (1): BatchNorm2d(128, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        )
+        (conv2_5): Sequential(
+          (0): Conv2d(128, 128, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+          (1): BatchNorm2d(128, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+          (2): ReLU(inplace=True)
+        )
+        (conv2_6): Sequential(
+          (0): Conv2d(128, 128, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+          (1): BatchNorm2d(128, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+          (2): ReLU(inplace=True)
+        )
+        (conv3): Sequential(
+          (0): Conv2d(256, 512, kernel_size=(1, 1), stride=(1, 1), bias=False)
+          (1): BatchNorm2d(512, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        )
+      )
+      (1): StripPooling(
+        (pool1): AdaptiveAvgPool2d(output_size=20)
+        (pool2): AdaptiveAvgPool2d(output_size=12)
+        (pool3): AdaptiveAvgPool2d(output_size=(1, None))
+        (pool4): AdaptiveAvgPool2d(output_size=(None, 1))
+        (conv1_1): Sequential(
+          (0): Conv2d(512, 128, kernel_size=(1, 1), stride=(1, 1), bias=False)
+          (1): BatchNorm2d(128, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+          (2): ReLU(inplace=True)
+        )
+        (conv1_2): Sequential(
+          (0): Conv2d(512, 128, kernel_size=(1, 1), stride=(1, 1), bias=False)
+          (1): BatchNorm2d(128, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+          (2): ReLU(inplace=True)
+        )
+        (conv2_0): Sequential(
+          (0): Conv2d(128, 128, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+          (1): BatchNorm2d(128, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        )
+        (conv2_1): Sequential(
+          (0): Conv2d(128, 128, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+          (1): BatchNorm2d(128, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        )
+        (conv2_2): Sequential(
+          (0): Conv2d(128, 128, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+          (1): BatchNorm2d(128, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        )
+        (conv2_3): Sequential(
+          (0): Conv2d(128, 128, kernel_size=(1, 3), stride=(1, 1), padding=(0, 1), bias=False)
+          (1): BatchNorm2d(128, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        )
+        (conv2_4): Sequential(
+          (0): Conv2d(128, 128, kernel_size=(3, 1), stride=(1, 1), padding=(1, 0), bias=False)
+          (1): BatchNorm2d(128, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        )
+        (conv2_5): Sequential(
+          (0): Conv2d(128, 128, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+          (1): BatchNorm2d(128, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+          (2): ReLU(inplace=True)
+        )
+        (conv2_6): Sequential(
+          (0): Conv2d(128, 128, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+          (1): BatchNorm2d(128, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+          (2): ReLU(inplace=True)
+        )
+        (conv3): Sequential(
+          (0): Conv2d(256, 512, kernel_size=(1, 1), stride=(1, 1), bias=False)
+          (1): BatchNorm2d(512, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        )
+      )
+    )
+    (disp_head1): DispHead(
+      (conv1): Conv2d(64, 1, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
+      (sigmoid): Sigmoid()
+    )
+  )
+)
