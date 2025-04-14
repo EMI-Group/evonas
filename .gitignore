@@ -4,6 +4,7 @@ mambavision_tiny_1k.pth.tar
 MLLA-T.pth
 vssd_tiny_best_ema.pth
 depth_anything_v2_vitl.pth
+vssd_maxsuper_best_ckpt_ema.pth
 model-*-best_*
 eval
 summaries

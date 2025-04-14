@@ -1,0 +1,37 @@
+--mode train
+--model_name MambaDepth
+--encoder SuperNet
+--checkpoint_path ./runs/super_00_test/d1_best_weight.pth
+--dataset kitti
+--data_path ../../dataset/KITTI/
+--gt_path ../../dataset/KITTI/data_depth_annotated/
+--filenames_file data_splits/eigen_train_files_with_gt.txt
+--batch_size 16
+--num_epochs 5
+--learning_rate 4e-5
+--weight_decay 1e-2
+--adam_eps 1e-3
+--num_threads 1
+--input_height 352
+--input_width 1120
+--max_depth 80
+--do_kb_crop
+--do_random_rotate
+--degree 1.0
+--log_directory ./runs/super_01_1/
+--multiprocessing_distributed
+--dist_url tcp://127.0.0.1:2342
+
+--log_freq 1000
+--do_online_eval
+--eval_freq 1000
+--data_path_eval ../../dataset/KITTI/
+--gt_path_eval ../../dataset/KITTI/data_depth_annotated/
+--filenames_file_eval data_splits/eigen_test_files_with_gt.txt
+--min_depth_eval 1e-3
+--max_depth_eval 80
+--garg_crop
+
+--mlp_ratio "[3.0, 3.5, 4.0]"
+--d_state "[64]"
+--ssd_expand "[4]"

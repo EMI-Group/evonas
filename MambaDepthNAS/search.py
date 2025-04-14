@@ -12,9 +12,17 @@ import argparse
 import numpy as np
 from tqdm import tqdm
 
+from pymoo.optimize import minimize
+from pymoo.core.problem import Problem
+# from pymoo.factory import get_algorithm, get_crossover, get_mutation
+from pymoo.algorithms.moo.nsga2 import NSGA2
+from pymoo.operators.sampling.rnd import IntegerRandomSampling
+from pymoo.operators.mutation.pm import PolynomialMutation
+from pymoo.operators.crossover.pntx import TwoPointCrossover
+
+
 os.environ["CUDA_VISIBLE_DEVICES"]="4,5,6,7"
 
-from tensorboardX import SummaryWriter
 
 from utils import post_process_depth, flip_lr, silog_loss, compute_errors, eval_metrics, \
                        block_print, enable_print, normalize_result, inv_normalize, convert_arg_line_to_args, get_root_logger, sample_mamba_subnet, unwrap_model, str2bool, str2list
@@ -24,8 +32,7 @@ from networks.model import MambaDepth
 # export PYTHONPATH=$PYTHONPATH:/data/code_yzh/Spatial-Mamba-main/kernels/dwconv2d
 # export PYTHONPATH=$PYTHONPATH:/data/code_yzh/Spatial-Mamba-main/kernels/selective_scan
 
-# python MambaDepthNAS/train.py configs/supernet_train_kitti_0_maxnet.txt
-# python MambaDepthNAS/train.py configs/supernet_train_kitti_1_mlp_1.txt
+# python MambaDepthNAS/search.py configs/search_kitti.txt
 
 parser = argparse.ArgumentParser(description='MambaDepth PyTorch implementation.', fromfile_prefix_chars='@')
 parser.convert_arg_line_to_args = convert_arg_line_to_args
@@ -52,17 +59,10 @@ parser.add_argument('--ssd_expand',                type=str2list, default=[2])
 # Log and save
 parser.add_argument('--log_directory',             type=str,   help='directory to save checkpoints and summaries', default='')
 parser.add_argument('--checkpoint_path',           type=str,   help='path to a checkpoint to load', default='')
-parser.add_argument('--log_freq',                  type=int,   help='Logging frequency in global steps', default=100)
-parser.add_argument('--save_freq',                 type=int,   help='Checkpoint saving frequency in global steps', default=5000)
 
 # Training
-parser.add_argument('--weight_decay',              type=float, help='weight decay factor for optimization', default=1e-2)
 parser.add_argument('--resume',                               help='if used with checkpoint_path, will restart training from step zero', action='store_true')
-parser.add_argument('--adam_eps',                  type=float, help='epsilon in Adam optimizer', default=1e-6)
 parser.add_argument('--batch_size',                type=int,   help='batch size', default=4)
-parser.add_argument('--num_epochs',                type=int,   help='number of epochs', default=50)
-parser.add_argument('--learning_rate',             type=float, help='initial learning rate', default=1e-4)
-parser.add_argument('--end_learning_rate',         type=float, help='end learning rate', default=-1)
 parser.add_argument('--variance_focus',            type=float, help='lambda in paper: [0, 1], higher value more focus on minimizing variance of error', default=0.85)
 
 # Preprocessing
@@ -95,6 +95,10 @@ parser.add_argument('--eval_freq',                 type=int,   help='Online eval
 parser.add_argument('--eval_summary_directory',    type=str,   help='output directory for eval summary,'
                                                                     'if empty outputs to checkpoint folder', default='')
 parser.add_argument('--dynamic_tanh', type=str2bool, default=False)
+# evolution
+parser.add_argument('--population_size',           type=int,    default=40)
+parser.add_argument('--n_iter',                    type=int,    default=60)
+
 
 if sys.argv.__len__() == 2:
     arg_filename_with_prefix = '@' + sys.argv[1]
@@ -107,8 +111,39 @@ if args.dataset == 'kitti' or args.dataset == 'nyu':
 elif args.dataset == 'kittipred':
     from dataloaders.dataloader_kittipred import NewDataLoader
 
+space = {
+    'mlp_ratio': [0.5, 1.0, 2.0, 3.0, 3.5, 4.0],
+    'd_state':  [16, 32, 48, 64],
+    'expand':   [0.5, 1, 2, 3, 4],
+}
 
-def online_eval(model, dataloader_eval, gpu, ngpus, post_process=False, logger=None):
+class NasCodec:
+    def __init__(self, space):
+        self.space = space
+        self.num_mlp = 4
+        self.num_d = 3
+        self.num_expand = 3
+
+    def encode(self, config):
+        return (
+            [self.space['mlp_ratio'].index(v) for v in config['mlp_ratio']] +
+            [self.space['d_state'].index(v) for v in config['d_state']] +
+            [self.space['expand'].index(v) for v in config['expand']]
+        )
+
+    def decode(self, indices):
+        i = 0
+        mlp_idx = indices[i:i+self.num_mlp]; i += self.num_mlp
+        d_idx   = indices[i:i+self.num_d];   i += self.num_d
+        ex_idx  = indices[i:i+self.num_expand]
+
+        return {
+            'mlp_ratio': [self.space['mlp_ratio'][j] for j in mlp_idx],
+            'd_state':   [self.space['d_state'][j] for j in d_idx],
+            'expand':    [self.space['expand'][j] for j in ex_idx],
+        }
+    
+def online_eval(model, dataloader_eval, sample_config, gpu, ngpus, post_process=False, logger=None):
     eval_measures = torch.zeros(10).cuda(device=gpu)
     for _, eval_sample_batched in enumerate(tqdm(dataloader_eval.data)):
         with torch.no_grad():
@@ -120,7 +155,7 @@ def online_eval(model, dataloader_eval, gpu, ngpus, post_process=False, logger=N
                 continue
 
             # random sample subnet
-            sample_config = sample_mamba_subnet(args)
+            # sample_config = sample_mamba_subnet(args)
             model_module = unwrap_model(model)
             model_module.backbone.set_sample_config(sample_config=sample_config)
             # print(sample_config)
@@ -173,25 +208,93 @@ def online_eval(model, dataloader_eval, gpu, ngpus, post_process=False, logger=N
         group = dist.new_group([i for i in range(ngpus)])
         dist.all_reduce(tensor=eval_measures, op=dist.ReduceOp.SUM, group=group)
 
+    eval_measures_cpu = eval_measures.cpu()
+    cnt = eval_measures_cpu[9].item()
+    eval_measures_cpu /= cnt
+    
     if not args.multiprocessing_distributed or gpu == 0:
-        eval_measures_cpu = eval_measures.cpu()
-        cnt = eval_measures_cpu[9].item()
-        eval_measures_cpu /= cnt
         logger.info('Computing errors for {} eval samples, post_process: {}'.format(int(cnt), post_process))
         logger.info("{:>7}, {:>7}, {:>7}, {:>7}, {:>7}, {:>7}, {:>7}, {:>7}, {:>7}".format('silog', 'abs_rel', 'log10', 'rms',
                                                                                      'sq_rel', 'log_rms', 'd1', 'd2',
                                                                                      'd3'))
-        # for i in range(8):
-        #     print('{:7.4f}, '.format(eval_measures_cpu[i]), end='')
-        # print('{:7.4f}'.format(eval_measures_cpu[8]))
         logger.info(", ".join(["{:7.4f}".format(eval_measures_cpu[i]) for i in range(9)]))
-        return eval_measures_cpu
+        
+    return eval_measures_cpu[6], 1000  # d1, params
 
-    return None
+
+def make_eval_func(model, dataloader_eval, gpu, ngpus, post_process=False, logger=None):
+    def eval_fn(config):
+        return online_eval(
+            model=model,
+            dataloader_eval=dataloader_eval,
+            sample_config=config,
+            gpu=gpu,
+            ngpus=ngpus,
+            post_process=post_process,
+            logger=logger
+        )
+    return eval_fn
+
+class IntegerFromFloatMutation(PolynomialMutation):
+    def __init__(self, prob=0.9, eta=20, at_least_once=False, **kwargs):
+        super().__init__(prob=prob, eta=eta, at_least_once=at_least_once, **kwargs)
+
+    def _do(self, problem, X, params=None, **kwargs):
+        Xp = super()._do(problem, X, params=params, **kwargs)
+        Xp_int = np.rint(Xp).astype(int)
+        return Xp_int
 
 
+class NasProblem(Problem):
+    def __init__(self, eval_func, min_op=True):
+        self.eval_func = eval_func
+        self.min_op = min_op
+        self.codec = NasCodec(space)
+        super().__init__(n_var=10, n_obj=2, n_constr=0,  # 变量数，目标数，约束数
+                         type_var=np.int32)
+        
+        self.xl = np.zeros(self.n_var)
+        self.xu = np.array(
+                        [len(space['mlp_ratio'])-1] * 4 +
+                        [len(space['d_state'])-1] * 3 +
+                        [len(space['expand'])-1] * 3,
+                        dtype=np.int32
+                    )
+
+    def _evaluate(self, x, out, *args, **kwargs):
+        f = np.full((x.shape[0], self.n_obj), np.nan)
+        # 假设 predictor 的 predict 方法接受一个二维数组，每行一个架构编码，返回对应的性能指标
+        f_err = []
+        params_list = []
+
+        for _x in x:
+            print('_x:', _x)
+            sample_config = self.codec.decode(_x)
+            print('sample_config:',sample_config)
+            performance, params = self.eval_func(sample_config)
+            print(f"Evaluating params for {_x}: {params}M, {performance}")
+
+            if self.min_op:
+                f_err.append(performance)
+            else:
+                f_err.append(1.0 - performance)
+            params_list.append(params)
+
+        if self.runner.rank == 0:
+            f_err_rounded = [round(err, 4) for err in f_err]  # 将 f_err 保留小数点后 4 位
+            params_rounded = [round(par, 4) for par in params_list]  # 将 params 保留小数点后 4 位
+            self.runner.logger.info(f"1 - mIoU = {f_err_rounded}")
+            self.runner.logger.info(f"params = {params_rounded}")
+
+        for i, (_x, err, par) in enumerate(zip(x, f_err, params_list)):
+            f[i, 0] = err
+            f[i, 1] = par
+
+        out["F"] = f
+
+        
 def main_worker(gpu, ngpus_per_node, args):
-    # logger
+    ### logger
     logger = get_root_logger(args.log_directory)
     args.gpu = gpu
 
@@ -205,7 +308,7 @@ def main_worker(gpu, ngpus_per_node, args):
             args.rank = args.rank * ngpus_per_node + gpu
         dist.init_process_group(backend=args.dist_backend, init_method=args.dist_url, world_size=args.world_size, rank=args.rank)
 
-    # MambaDepth model
+    ### MambaDepth model
     model = MambaDepth(args, version=args.encoder, inv_depth=False, max_depth=args.max_depth, pretrained=args.pretrain)
     if args.dynamic_tanh:  ### 替换归一化层
         from networks.dynamic_tanh import convert_ln_to_dyt
@@ -213,7 +316,7 @@ def main_worker(gpu, ngpus_per_node, args):
         logger.info("==> Using dynamic_tanh!")
 
     model.train()
-
+    ### model params
     if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
         num_params = sum([np.prod(p.size()) for p in model.parameters()])
         logger.info("== Total number of parameters: {}".format(num_params))
@@ -239,42 +342,12 @@ def main_worker(gpu, ngpus_per_node, args):
         f.write(str(model))
     # assert False,'print model'
 
-    '''show param'''
-    # 计算FLOPs 和 Params
-    '''https://github.com/MrYxJ/calculate-flops.pytorch?tab=readme-ov-file'''
-    # print('*'*20, ' calflops ', '*'*20)
-    # from calflops import calculate_flops
-    # # from torchvision import models
-    # import sys
-    # with open('./FLOPs_Params.log', 'w') as f:
-    #     original_stdout = sys.stdout
-    #     sys.stdout = f
-    #     # model = models.resnet50()
-    #     input_shape = (8, 3, 352, 1120)
-    #     flops, macs, params = calculate_flops(model=model, 
-    #                                         input_shape=input_shape,
-    #                                         output_as_string=True,
-    #                                         output_precision=2)
-    #     sys.stdout = original_stdout
-    #     print("net FLOPs:%s   MACs:%s   Params:%s \n" %(flops, macs, params))        
-    #     #Alexnet FLOPs:4.2892 GFLOPS   MACs:2.1426 GMACs   Params:61.1008 M 
-    # assert False, 'over'
-
     if args.distributed:
         logger.info("== Model Initialized on GPU: {}".format(args.gpu))
     else:
         logger.info("== Model Initialized")
 
-    global_step = 0
-    best_eval_measures_lower_better = torch.zeros(6).cpu() + 1e3
-    best_eval_measures_higher_better = torch.zeros(3).cpu()
-    best_eval_steps = np.zeros(9, dtype=np.int32)
-
-    # Training parameters
-    optimizer = torch.optim.Adam([{'params': model.module.parameters()}],
-                                lr=args.learning_rate)
-
-    model_just_loaded = False
+    ### load weight
     if args.checkpoint_path != '':
         if os.path.isfile(args.checkpoint_path):
             logger.info("== Loading checkpoint '{}'".format(args.checkpoint_path))
@@ -284,212 +357,73 @@ def main_worker(gpu, ngpus_per_node, args):
                 loc = 'cuda:{}'.format(args.gpu)
                 checkpoint = torch.load(args.checkpoint_path, map_location=loc)
             model.load_state_dict(checkpoint['model'])
-            if args.resume:
-                try:
-                    optimizer.load_state_dict(checkpoint['optimizer'])
-                    global_step = checkpoint['global_step']
-                    best_eval_measures_higher_better = checkpoint['best_eval_measures_higher_better'].cpu()
-                    best_eval_measures_lower_better = checkpoint['best_eval_measures_lower_better'].cpu()
-                    best_eval_steps = checkpoint['best_eval_steps']
-                except KeyError:
-                    logger.info("Could not load values for online evaluation")
 
             logger.info("== Loaded checkpoint '{}' (global_step {})".format(args.checkpoint_path, checkpoint['global_step']))
         else:
             logger.info("== No checkpoint found at '{}'".format(args.checkpoint_path))
-        model_just_loaded = True
+
         del checkpoint
 
     cudnn.benchmark = True
 
-    dataloader = NewDataLoader(args, 'train')
+    ### get dataset
     dataloader_eval = NewDataLoader(args, 'online_eval')
 
-    # ===== Evaluation before training ======
-    # model.eval()
-    # with torch.no_grad():
-    #     eval_measures = online_eval(model, dataloader_eval, gpu, ngpus_per_node, post_process=True)
-
-    # Logging
-    if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
-        writer = SummaryWriter(args.log_directory + '/' + args.model_name + '/summaries', flush_secs=30)
-        if args.do_online_eval:
-            if args.eval_summary_directory != '':
-                eval_summary_path = os.path.join(args.eval_summary_directory, args.model_name)
-            else:
-                eval_summary_path = os.path.join(args.log_directory, args.model_name, 'eval')
-            eval_summary_writer = SummaryWriter(eval_summary_path, flush_secs=30)
-
-    silog_criterion = silog_loss(variance_focus=args.variance_focus)
-
-    start_time = time.time()
-    duration = 0
-
-    num_log_images = args.batch_size
-    end_learning_rate = args.end_learning_rate if args.end_learning_rate != -1 else 0.1 * args.learning_rate
-
-    var_sum = [var.sum().item() for var in model.parameters() if var.requires_grad]
-    var_cnt = len(var_sum)
-    var_sum = np.sum(var_sum)
-
-    logger.info("== Initial variables' sum: {:.3f}, avg: {:.3f}".format(var_sum, var_sum/var_cnt))
-
-    steps_per_epoch = len(dataloader.data)
-    num_total_steps = args.num_epochs * steps_per_epoch
-    epoch = global_step // steps_per_epoch
+    ### evolution
+    model.eval()
+    eval_func = make_eval_func(model=model, dataloader_eval=dataloader_eval, gpu=gpu, ngpus=ngpus_per_node, post_process=True, logger=logger)
+    codec = NasCodec(space)
 
     if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
-        logger.info('args: '+str(args))
+        logger.info(f"==> Starting evolution...")
 
-    while epoch < args.num_epochs:
-        if args.distributed:
-            dataloader.train_sampler.set_epoch(epoch)
-         
-        random.seed(epoch)
-        for step, sample_batched in enumerate(dataloader.data):
-            optimizer.zero_grad()
-            before_op_time = time.time()
+    problem = NasProblem(eval_func=eval_func, min_op=False)
+    method = NSGA2(
+        pop_size=args.population_size,  # initialize with current nd archs
+        sampling=IntegerRandomSampling(),
+        crossover=TwoPointCrossover(),
+        mutation=IntegerFromFloatMutation(eta=1.0),
+        eliminate_duplicates=True)
 
-            image = torch.autograd.Variable(sample_batched['image'].cuda(args.gpu, non_blocking=True))
-            depth_gt = torch.autograd.Variable(sample_batched['depth'].cuda(args.gpu, non_blocking=True))
-
-            # random sample subnet
-            sample_config = sample_mamba_subnet(args)
-            model_module = unwrap_model(model)
-            model_module.backbone.set_sample_config(sample_config=sample_config)
-            # print(sample_config)  # {'mlp_ratio': [3.5, 4.0, 1.0, 3.5], 'd_state': [64, 64, 48, -1], 'expand': [0.5, 4, 0.5, -1]}
-
-            depth_est = model(image)
-
-            if args.dataset == 'nyu':
-                mask = depth_gt > 0.1
-            else:
-                mask = depth_gt > 1.0
-
-            loss = silog_criterion.forward(depth_est, depth_gt, mask.to(torch.bool))
-            loss.backward()
-            for param_group in optimizer.param_groups:
-                current_lr = (args.learning_rate - end_learning_rate) * (1 - global_step / num_total_steps) ** 0.9 + end_learning_rate
-                param_group['lr'] = current_lr
-
-            optimizer.step()
-
-            if global_step % 100 == 0:
-                if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
-                    logger.info('[epoch][s/s_per_e/gs]: [{}][{}/{}/{}], lr: {:.12f}, loss: {:.12f}'.format(epoch, step, steps_per_epoch, global_step, current_lr, loss.item()))
-                    if np.isnan(loss.cpu().item()):
-                        logger.info('NaN in loss occurred. Aborting training.')
-                        return -1
-
-            duration += time.time() - before_op_time
-            if global_step and global_step % args.log_freq == 0 and not model_just_loaded:
-                var_sum = [var.sum().item() for var in model.parameters() if var.requires_grad]
-                var_cnt = len(var_sum)
-                var_sum = np.sum(var_sum)
-                examples_per_sec = args.batch_size / duration * args.log_freq
-                duration = 0
-                time_sofar = (time.time() - start_time) / 3600
-                training_time_left = (num_total_steps / global_step - 1.0) * time_sofar
-                # if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
-                #     print("{}".format(args.model_name))
-                print_string = 'GPU: {} | examples/s: {:4.2f} | loss: {:.5f} | var sum: {:.3f} avg: {:.3f} | time elapsed: {:.2f}h | time left: {:.2f}h'
-                logger.info(print_string.format(args.gpu, examples_per_sec, loss.item(), var_sum.item(), var_sum.item()/var_cnt, time_sofar, training_time_left))
-
-                if not args.multiprocessing_distributed or (args.multiprocessing_distributed
-                                                            and args.rank % ngpus_per_node == 0):
-                    writer.add_scalar('silog_loss', loss.item(), global_step)
-                    writer.add_scalar('learning_rate', current_lr, global_step)
-                    writer.add_scalar('var_average', var_sum.item()/var_cnt, global_step)
-                    depth_gt = torch.where(depth_gt < 1e-3, depth_gt * 0 + 1e3, depth_gt)
-                    for i in range(num_log_images):
-                        writer.add_image('depth_gt/image/{}'.format(i), normalize_result(1/depth_gt[i, :, :, :].data), global_step)
-                        writer.add_image('depth_est/image/{}'.format(i), normalize_result(1/depth_est[i, :, :, :].data), global_step)
-                        writer.add_image('image/image/{}'.format(i), inv_normalize(image[i, :, :, :]).data, global_step)
-                    writer.flush()
-
-            if args.do_online_eval and global_step and global_step % args.eval_freq == 0 and not model_just_loaded:
-                time.sleep(0.1)
-                model.eval()
-                with torch.no_grad():
-                    eval_measures = online_eval(model, dataloader_eval, gpu, ngpus_per_node, post_process=True, logger=logger)
-                if eval_measures is not None:
-                    for i in range(9):
-                        eval_summary_writer.add_scalar(eval_metrics[i], eval_measures[i].cpu(), int(global_step))
-                        measure = eval_measures[i]
-                        is_best = False
-                        if i < 6 and measure < best_eval_measures_lower_better[i]:
-                            old_best = best_eval_measures_lower_better[i].item()
-                            best_eval_measures_lower_better[i] = measure.item()
-                            is_best = True
-                        elif i >= 6 and measure > best_eval_measures_higher_better[i-6]:
-                            old_best = best_eval_measures_higher_better[i-6].item()
-                            best_eval_measures_higher_better[i-6] = measure.item()
-                            is_best = True
-                        if is_best:
-                            old_best_step = best_eval_steps[i]
-                            old_best_name = '/model-{}-best_{}_{:.5f}'.format(old_best_step, eval_metrics[i], old_best)
-                            model_path = args.log_directory + '/' + args.model_name + old_best_name
-                            if os.path.exists(model_path):
-                                command = 'rm {}'.format(model_path)
-                                os.system(command)
-                            best_eval_steps[i] = global_step
-                            model_save_name = '/model-{}-best_{}_{:.5f}'.format(global_step, eval_metrics[i], measure)
-                            print('New best for {}. Saving model: {}'.format(eval_metrics[i], model_save_name))
-                            checkpoint = {'global_step': global_step,
-                                          'model': model.state_dict(),
-                                          'optimizer': optimizer.state_dict(),
-                                          'best_eval_measures_higher_better': best_eval_measures_higher_better,
-                                          'best_eval_measures_lower_better': best_eval_measures_lower_better,
-                                          'best_eval_steps': best_eval_steps
-                                          }
-                            torch.save(checkpoint, args.log_directory + '/' + args.model_name + model_save_name)
-                        if is_best and eval_metrics[i] == 'd1':
-                            symlink_path = os.path.join(args.log_directory, 'd1_best_weight.pth')
-                            target_path = os.path.join(args.log_directory, args.model_name + model_save_name)
-                            relative_target_path = os.path.relpath(target_path, start=os.path.dirname(symlink_path))
-                            if os.path.islink(symlink_path) or os.path.exists(symlink_path):
-                                os.remove(symlink_path)  # rm the old link
-                            os.symlink(relative_target_path, symlink_path)
-
-                    eval_summary_writer.flush()
-                model.train()
-                block_print()
-                enable_print()
-
-            model_just_loaded = False
-            global_step += 1
-
-        epoch += 1
-       
+    res = minimize(
+        problem, method, termination=('n_gen', args.n_iter), save_history=True, verbose=True, seed=1274394)
+    
     if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
-        writer.close()
-        if args.do_online_eval:
-            eval_summary_writer.close()
+        ### history
+        for gen in res.history:
+            pop_X = gen.pop.get("X")
+            pop_F = gen.pop.get("F")
+            logger.info(f"Generation: {gen.n_gen}")
+            logger.info(f"Solutions:\n{pop_X}")
+            logger.info(f"Objective Values:\n{pop_F}")
 
+        ### result
+        optimal_solutions = res.X.tolist()
+        optimal_objective_values = res.F
+
+        logger.info("Optimal Code:")
+        logger.info(optimal_solutions)
+
+        logger.info("Optimal Objective Values:")
+        logger.info(optimal_objective_values)
+
+        logger.info("Optimal Config:")
+        logger.info(codec.decode(optimal_solutions))
+
+        logger.info(f"==> Finished evolution!")
+    
 
 def main():
     if args.mode != 'train':
         print('train.py is only for training.')
         return -1
 
-    command = 'mkdir ' + os.path.join(args.log_directory, args.model_name)
+    command = 'mkdir -p ' + os.path.join(args.log_directory, args.model_name)
     os.system(command)
 
     args_out_path = os.path.join(args.log_directory, args.model_name)
     command = 'cp ' + sys.argv[1] + ' ' + args_out_path
     os.system(command)
-
-    save_files = True
-    if save_files:
-        aux_out_path = os.path.join(args.log_directory, args.model_name)
-        networks_savepath = os.path.join(aux_out_path, 'networks')
-        dataloaders_savepath = os.path.join(aux_out_path, 'dataloaders')
-        command = 'cp MambaDepthNAS/train.py ' + aux_out_path
-        os.system(command)
-        command = 'mkdir -p ' + networks_savepath + ' && cp MambaDepthNAS/networks/*.py ' + networks_savepath
-        os.system(command)
-        command = 'mkdir -p ' + dataloaders_savepath + ' && cp MambaDepthNAS/dataloaders/*.py ' + dataloaders_savepath
-        os.system(command)
 
     torch.cuda.empty_cache()
     args.distributed = args.world_size > 1 or args.multiprocessing_distributed

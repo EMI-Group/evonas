@@ -3,18 +3,19 @@ import torch.nn as nn
 import torch.distributed as dist
 from torch.utils.data import Sampler
 from torchvision import transforms
+from timm.utils import ModelEma as ModelEma
+from ast import literal_eval
 
 import os, sys
 import numpy as np
 import math
 import torch
-
+import random
+import argparse
+import shlex
 
 def convert_arg_line_to_args(arg_line):
-    for arg in arg_line.split():
-        if not arg.strip():
-            continue
-        yield arg
+    return shlex.split(arg_line)
 
 
 def block_print():
@@ -293,3 +294,54 @@ def get_dist_info():
     if dist.is_available() and dist.is_initialized():
         return dist.get_rank(), dist.get_world_size()
     return 0, 1  # 非分布式时，默认 rank=0, world_size=1
+
+
+def str2bool(v):
+    """
+    Converts string to bool type; enables command line 
+    arguments in the format of '--arg1 true --arg2 false'
+    """
+    if isinstance(v, bool):
+        return v
+    if v.lower() in ('yes', 'true', 't', 'y', '1'):
+        return True
+    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
+        return False
+    else:
+        raise argparse.ArgumentTypeError('Boolean value expected.')
+    
+    
+def str2list(v):
+    try:
+        return literal_eval(v)
+    except Exception as e:
+        raise argparse.ArgumentTypeError(f"Invalid list syntax: {v}")
+    
+
+def sample_mamba_subnet(config, num_layers=4):
+    """
+    随机采样一个 Mamba 子网络结构配置。
+
+    Args:
+        config: 含有 Search_Space 字段的配置对象（支持属性访问）
+        num_layers (int): 层数，默认 4
+
+    Returns:
+        dict: sample_config，包含每层的 mlp_ratio, d_state, expand 配置
+    """
+
+
+    sample_config = {
+        'mlp_ratio': [random.choice(config.mlp_ratio) for _ in range(num_layers)],
+        'd_state':   [random.choice(config.d_state) for _ in range(num_layers-1)],
+        'expand':    [random.choice(config.ssd_expand) for _ in range(num_layers-1)],
+    }
+    # Last stage is not SSD (is Self-Attention), so d_state and expand is not used!
+    return sample_config
+
+
+def unwrap_model(model):
+    if isinstance(model, ModelEma):
+        return unwrap_model(model.ema)
+    else:
+        return model.module if hasattr(model, 'module') else model

@@ -1,27 +1,43 @@
-# paper3_code
+# Mamba_DistillNAS
 
-2025/3/16 update MambaVision-T + MambaVision for encoder-decoder model with new skip connection
+Using **Once-for-All Progressive Shrinking**。
 
-2025/3/26 update VSSD-T + MambaVision for encoder-decoder model
+------
 
-2025/3/28 update VSSD-T + NeWCRFs for encoder-decoder model
+##  Update Logs
 
-2025/4/9 update VSSD-T + SpatialMamba for encoder-decoder model
+2025/4/11 update SuperNet(VSSD) and Search Space
 
-|           Model           | Param(M) |   d1   |
-| :-----------------------: | :------: | :----: |
-|      Swin-T+NeWCRFs       |    88    | 0.9645 |
-|    Swin-T+MambaVision     |    64    | 0.9664 |
-| MambaVision-T+MambaVision |    62    | 0.9630 |
-|      MILA+MambaVision     |    47    | 0.9675 |
-|    VSSD-T+MambaVision     |    46    | 0.9673 |
-|    VSSD-T+NeWCRFs(c/2)    |    45    | 0.9675 |
-|  VSSD-T+SP+NeWCRFs(c/2)   |    34    | 0.9659 |
-| **VSSD-T+SP+SpatialMamba**|    37    | **0.9693** |
+------
 
-# TODO
-- [ ] Search Space (VSSD)
-    - [ ] add choose (mlp_ratio, dim)
+##  Search Space
+
+```
+MLP_RATIO:   [0.5, 1.0, 2.0, 3.0, 3.5, 4.0]
+D_STATE:     [16, 32, 48, 64] 
+SSD_EXPAND:  [0.5, 1, 2, 3, 4]
+```
+
+------
+
+##  Train Piplines
+
+configs/
+├── supernet_train_kitti_0_maxnet.txt      # Step 0: 最大模型预训练
+├── supernet_train_kitti_1_mlp_1.txt       # Step 1: 解锁 MLP_RATIO=[3.0, 3.5, 4.0]
+├── supernet_train_kitti_2_mlp_2.txt       # Step 1: 解锁 MLP_RATIO=[0.5, 1.0, 2.0, 3.0, 3.5, 4.0]
+├── supernet_train_kitti_3_state_1.txt     # Step 2: 解锁 D_STATE=[48, 64]
+├── supernet_train_kitti_4_state_2.txt     # Step 3: 解锁 D_STATE=[16, 32, 48, 64]
+├── supernet_train_kitti_6_ssdExpand_1.txt # Step 4: 解锁 SSD_EXPAND=[2, 3, 4]
+├── supernet_train_kitti_6_ssdExpand_2.txt # Step 5: 解锁 SSD_EXPAND=[0.5, 1, 2, 3, 4]
+
+------
+
+## TODO
+- [x] Search Space (VSSD)
+    - [x] add choose (MLP_RATIO, D_STATE, SSD_EXPAND)
+- [ ] Training strategy (encoder-decoder lr, warmup lr, ema, Gradient Accumulation, amp)
+- [ ] Loading pretrained weight (encoder, decoder, ema)
 - [ ] SuperNet Training (Knowledge Distillation)
-- [ ] NAS Search
+- [x] NAS Search
 - [ ] Retrain

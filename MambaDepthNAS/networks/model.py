@@ -18,7 +18,7 @@ class MambaDepth(nn.Module):
     """
     Depth network based on VSSD-T + SpatialMamba.
     """
-    def __init__(self, version=None, inv_depth=False, pretrained=None, 
+    def __init__(self, args=None, version=None, inv_depth=False, pretrained=None, 
                     frozen_stages=-1, min_depth=0.1, max_depth=100.0, **kwargs):
         super().__init__()
 
@@ -30,10 +30,38 @@ class MambaDepth(nn.Module):
         # norm_cfg = dict(type='GN', requires_grad=True, num_groups=8)
 
         ### encoder
-        if version == 'VSSD':
+        if version == 'SuperNet':
             from .VSSD.mamba2 import Backbone_VMAMBA2
             self.backbone = Backbone_VMAMBA2(
-                image_size=(352,1120),  # 需配合数据集
+                image_size=(args.input_height, args.input_width),
+                patch_size=4,  # 无实际意义
+                in_chans=3,
+                embed_dim=64,
+                depths=[2, 4, 8, 4],
+                num_heads=[2, 4, 8, 16],
+                mlp_ratio=4.0,
+                drop_rate=0.0,
+                drop_path_rate=0.2,
+                simple_downsample=False,
+                simple_patch_embed=False,
+                ssd_expansion=4,
+                ssd_ngroups=1,
+                ssd_chunk_size=256,
+                linear_attn_duality=True,
+                lepe=False,
+                attn_types=['mamba2', 'mamba2', 'mamba2', 'standard'],
+                bidirection=False,
+                d_state=64,
+                ssd_positve_dA=True,
+                # pretrained weight
+                pretrained=pretrained
+            )
+            in_channels = [64, 128, 256, 512]
+
+        elif version == 'VSSD':
+            from .VSSD.mamba2_fixed import Backbone_VMAMBA2_Fixed
+            self.backbone = Backbone_VMAMBA2_Fixed(
+                image_size=(args.input_height, args.input_width),
                 patch_size=4,  # 无实际意义
                 in_chans=3,
                 embed_dim=64,
@@ -57,7 +85,7 @@ class MambaDepth(nn.Module):
                 pretrained=pretrained
             )
             in_channels = [64, 128, 256, 512]
-
+            
         elif version == 'MambaVision':
             from .mambaVision import Block, MambaVision
             model_path = './mambavision_tiny_1k.pth.tar'
@@ -133,21 +161,7 @@ class MambaDepth(nn.Module):
             self.backbone = SwinTransformer(**backbone_cfg)
 
         embed_dim = 512
-        # decoder_cfg = dict(
-        #     in_channels=in_channels,
-        #     in_index=[0, 1, 2, 3],
-        #     pool_scales=(1, 2, 3, 6),
-        #     channels=embed_dim,
-        #     dropout_ratio=0.0,
-        #     num_classes=32,
-        #     norm_cfg=norm_cfg,
-        #     align_corners=False
-        # )
-
-        ### decoder
-        win = 7
         final_dims = 64
-
         depths = [1,1,1,1]
 
         self.spa_mab3 = SpatialMambaLayer(dim=in_channels[3], depth=depths[0], d_state=1, mlp_ratio=4.0)
@@ -178,10 +192,6 @@ class MambaDepth(nn.Module):
 
     def forward(self, imgs):
         feats = self.backbone(imgs)
-
-        # for ii in range(len(feats)):
-        #     print(f'feat[{ii}]: {feats[ii].shape}')
-        # assert False
 
         ppm_out = self.PPM(feats[3])
 

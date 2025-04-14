@@ -12,16 +12,10 @@ from einops import rearrange, repeat
 import math
 import copy
 try:
-    from mamba_util import PatchMerging,SimplePatchMerging, Stem, SimpleStem, Mlp, MlpSuper
+    from mamba_util import PatchMerging,SimplePatchMerging, Stem, SimpleStem, Mlp
 except:
-    from .mamba_util import PatchMerging, SimplePatchMerging, Stem, SimpleStem, Mlp, MlpSuper
+    from .mamba_util import PatchMerging, SimplePatchMerging, Stem, SimpleStem, Mlp
 from fvcore.nn import FlopCountAnalysis, flop_count_str, flop_count, parameter_count
-
-# yzh
-from .module.Linear_xbc_super import LinearxBCSuper
-from .module.Conv_super import GConvSuper
-from .module.layernorm_super import LayerNormSuper
-from .module.Linear_super import LinearSuper
 
 class tTensor(torch.Tensor):
     @property
@@ -117,7 +111,6 @@ class Mamba2(nn.Module):
         self.headdim = headdim
         self.d_state = d_state
         if ngroups == -1:
-            assert False,'need to change'
             ngroups = self.d_inner // self.headdim #equivalent to multi-head attention
         self.ngroups = ngroups
         assert self.d_inner % self.headdim == 0
@@ -131,41 +124,26 @@ class Mamba2(nn.Module):
         self.layer_idx = layer_idx
         self.ssd_positve_dA = kwargs.get('ssd_positve_dA', True) #default to False, ablation for linear attn duality
         # Order: [z, x, B, C, dt]
+        d_in_proj = 2 * self.d_inner + 2 * self.ngroups * self.d_state + self.nheads
+        self.in_proj = nn.Linear(self.d_model, int(d_in_proj), bias=bias, **factory_kwargs) #
 
-        # yzh
-        self.in_proj = LinearxBCSuper(self.d_model, self.d_inner, self.ngroups, self.d_state, self.nheads, bias=bias)
-        # d_in_proj = 2 * self.d_inner + 2 * self.ngroups * self.d_state + self.nheads
-        # self.in_proj = nn.Linear(self.d_model, int(d_in_proj), bias=bias, **factory_kwargs) #
-        
         conv_dim = self.d_inner + 2 * self.ngroups * self.d_state
 
-        # yzh
-        self.conv2d = GConvSuper(super_in_channels=conv_dim,
-                                super_out_channels=conv_dim,
-                                groups=conv_dim,
-                                bias=conv_bias,
-                                kernel_size=d_conv,
-                                padding=(d_conv - 1) // 2,
 
-                                super_d_inner=self.d_inner,
-                                super_ngroups=self.ngroups,
-                                super_d_state=self.d_state,
+        self.conv2d = nn.Conv2d(
+            in_channels=conv_dim,
+            out_channels=conv_dim,
+            groups=conv_dim,
+            bias=conv_bias,
+            kernel_size=d_conv,
+            padding=(d_conv - 1) // 2,
+            **factory_kwargs,
         )
-        # self.conv2d = nn.Conv2d(
-        #     in_channels=conv_dim,
-        #     out_channels=conv_dim,
-        #     groups=conv_dim,
-        #     bias=conv_bias,
-        #     kernel_size=d_conv,
-        #     padding=(d_conv - 1) // 2,
-        #     **factory_kwargs,
-        # )
         if self.conv_init is not None:
             nn.init.uniform_(self.conv1d.weight, -self.conv_init, self.conv_init)
         # self.conv1d.weight._no_weight_decay = True
 
         if self.learnable_init_states:
-            assert False,'d_state is changing'
             self.init_states = nn.Parameter(torch.zeros(self.nheads, self.headdim, self.d_state, **factory_kwargs))
             self.init_states._no_weight_decay = True
 
@@ -199,37 +177,12 @@ class Mamba2(nn.Module):
         # modified from RMSNormGated to layer norm
         #assert RMSNormGated is not None
         #self.norm = RMSNormGated(self.d_inner, eps=1e-5, norm_before_gate=False, **factory_kwargs)
-        self.norm = LayerNormSuper(self.d_inner)
-        self.out_proj = LinearSuper(self.d_inner, self.d_model, bias=bias)
-        # self.out_proj = nn.Linear(self.d_inner, self.d_model, bias=bias, **factory_kwargs)
+        self.norm = nn.LayerNorm(self.d_inner)
+        self.out_proj = nn.Linear(self.d_inner, self.d_model, bias=bias, **factory_kwargs)
 
         #linear attention duality
         self.linear_attn_duality = linear_attn_duality
         self.kwargs = kwargs
-
-    def set_sample_config(self, sample_expand, sample_d_state, sample_headdim):
-        self.sample_expand = sample_expand
-        self.sample_headdim = sample_headdim
-        self.sample_d_inner = int(self.sample_expand * self.d_model)
-        assert self.sample_d_inner % self.sample_headdim == 0
-        self.sample_nheads = self.sample_d_inner // self.sample_headdim
-
-        self.sample_dt_bias = self.dt_bias[:self.sample_nheads]
-        self.sample_dt_bias._no_weight_decay = True
-        
-        self.sample_A_log = self.A_log[:self.sample_nheads]
-        self.sample_A_log._no_weight_decay = True
-
-        self.sample_D = self.D[:self.sample_nheads]
-        self.sample_D._no_weight_decay = True
-
-        self.norm.set_sample_config(self.sample_d_inner)
-        self.out_proj.set_sample_config(self.sample_d_inner, self.d_model)
-
-        self.sample_d_state = sample_d_state
-        self.in_proj.set_sample_config(self.d_model, self.sample_d_inner, self.sample_d_state, self.sample_nheads)
-        sample_conv_dim = self.sample_d_inner + 2 * self.ngroups * self.sample_d_state
-        self.conv2d.set_sample_config(sample_conv_dim, self.sample_d_inner, self.ngroups, self.sample_d_state)
 
     def non_casual_linear_attn(self, x, dt, A, B, C, D, H=None, W=None):
         '''
@@ -289,15 +242,15 @@ class Mamba2(nn.Module):
         batch, seqlen, dim = u.shape
 
         zxbcdt = self.in_proj(u)  # (B, L, d_in_proj)
-        A = -torch.exp(self.sample_A_log)  # (nheads) or (d_inner, d_state)
+        A = -torch.exp(self.A_log)  # (nheads) or (d_inner, d_state)
         initial_states=repeat(self.init_states, "... -> b ...", b=batch) if self.learnable_init_states else None
         dt_limit_kwargs = {} if self.dt_limit == (0.0, float("inf")) else dict(dt_limit=self.dt_limit)
 
-        # print(self.sample_d_inner, self.ngroups, self.sample_d_state, self.nheads)
+
         z, xBC, dt = torch.split(
-            zxbcdt, [self.sample_d_inner, self.sample_d_inner + 2 * self.ngroups * self.sample_d_state, self.sample_nheads], dim=-1
+            zxbcdt, [self.d_inner, self.d_inner + 2 * self.ngroups * self.d_state, self.nheads], dim=-1
         )
-        dt = F.softplus(dt + self.sample_dt_bias)  # (B, L, nheads)
+        dt = F.softplus(dt + self.dt_bias)  # (B, L, nheads)
         assert self.activation in ["silu", "swish"]
 
 
@@ -308,12 +261,12 @@ class Mamba2(nn.Module):
 
         # Split into 3 main branches: X, B, C
         # These correspond to V, K, Q respectively in the SSM/attention duality
-        x, B, C = torch.split(xBC, [self.sample_d_inner, self.ngroups * self.sample_d_state, self.ngroups * self.sample_d_state], dim=-1)
+        x, B, C = torch.split(xBC, [self.d_inner, self.ngroups * self.d_state, self.ngroups * self.d_state], dim=-1)
         x, dt, A, B, C = to_ttensor(x, dt, A, B, C)
         if self.linear_attn_duality:
             y = self.non_casual_linear_attn(
-                rearrange(x, "b l (h p) -> b l h p", p=self.sample_headdim),
-                dt, A, B, C, self.sample_D, H, W
+                rearrange(x, "b l (h p) -> b l h p", p=self.headdim),
+                dt, A, B, C, self.D, H, W
             )
         else:
             if self.kwargs.get('bidirection', False):
@@ -392,15 +345,7 @@ class VMAMBA2Block(nn.Module):
 
         self.cpe2 = nn.Conv2d(dim, dim, 3, padding=1, groups=dim)
         self.norm2 = norm_layer(dim)
-
-        # yzh
-        self.mlp = MlpSuper(in_features=dim, hidden_features=int(dim * mlp_ratio), act_layer=act_layer, drop=drop)
-        # self.mlp = Mlp(in_features=dim, hidden_features=int(dim * mlp_ratio), act_layer=act_layer, drop=drop)
-
-    def set_sample_config(self, sample_mlp_ratio, sample_d_state=None, sample_expand=None):
-        self.mlp.set_sample_config(self.dim, sample_mlp_ratio)
-        if isinstance(self.attn, Mamba2):
-            self.attn.set_sample_config(sample_expand=sample_expand ,sample_d_state=sample_d_state, sample_headdim=int(self.dim*sample_expand // self.num_heads))
+        self.mlp = Mlp(in_features=dim, hidden_features=int(dim * mlp_ratio), act_layer=act_layer, drop=drop)
 
     def forward(self, x, H=None, W=None):
         B, L, C = x.shape
@@ -464,10 +409,6 @@ class BasicLayer(nn.Module):
             self.downsample = downsample(input_resolution, dim=dim)
         else:
             self.downsample = None
-        
-    def set_sample_config(self, sample_mlp_ratio, sample_d_state=None, sample_expand=None):
-        for blk in self.blocks:
-            blk.set_sample_config(sample_mlp_ratio, sample_d_state, sample_expand)
 
     def forward(self, x, H=None, W=None):
         for blk in self.blocks:
@@ -546,17 +487,6 @@ class VMAMBA2(nn.Module):
         self.head = nn.Linear(self.num_features, num_classes) if num_classes > 0 else nn.Identity()
 
         self.apply(self._init_weights)
-    
-    def set_sample_config(self, sample_config):
-        sample_mlp_ratio_list = sample_config['mlp_ratio']
-        sample_d_state_list = sample_config['d_state']
-        sample_expand_list = sample_config['expand']
-        for i, layer in enumerate(self.layers):
-            layer.set_sample_config(
-                sample_mlp_ratio_list[i],
-                sample_d_state_list[i] if i != len(self.layers) - 1 else None,
-                sample_expand_list[i] if i != len(self.layers) - 1 else None
-            )
 
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
@@ -617,7 +547,7 @@ class VMAMBA2(nn.Module):
         return x
 
 
-class Backbone_VMAMBA2(VMAMBA2):
+class Backbone_VMAMBA2_Fixed(VMAMBA2):
     def __init__(self, out_indices=(0, 1, 2, 3), pretrained=None, **kwargs):
         super().__init__(**kwargs)
         norm_layer = nn.LayerNorm

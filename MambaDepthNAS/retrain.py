@@ -5,28 +5,41 @@ import torch.backends.cudnn as cudnn
 import torch.distributed as dist
 import torch.multiprocessing as mp
 
-import random
 import os, sys, time
 from telnetlib import IP
 import argparse
 import numpy as np
 from tqdm import tqdm
 
-os.environ["CUDA_VISIBLE_DEVICES"]="4,5,6,7"
+os.environ["CUDA_VISIBLE_DEVICES"]="0,1"
 
 from tensorboardX import SummaryWriter
 
 from utils import post_process_depth, flip_lr, silog_loss, compute_errors, eval_metrics, \
-                       block_print, enable_print, normalize_result, inv_normalize, convert_arg_line_to_args, get_root_logger, sample_mamba_subnet, unwrap_model, str2bool, str2list
+                       block_print, enable_print, normalize_result, inv_normalize, convert_arg_line_to_args, get_root_logger
 from networks.model import MambaDepth
 
 # (choose SpatialMamba) 
 # export PYTHONPATH=$PYTHONPATH:/data/code_yzh/Spatial-Mamba-main/kernels/dwconv2d
 # export PYTHONPATH=$PYTHONPATH:/data/code_yzh/Spatial-Mamba-main/kernels/selective_scan
 
-# python MambaDepthNAS/train.py configs/supernet_train_kitti_0_maxnet.txt
-# python MambaDepthNAS/train.py configs/supernet_train_kitti_1_mlp_1.txt
+# python MambaDepthNAS/retrain.py configs/arguments_train_kittieigen_vssd.txt
 
+
+def str2bool(v):
+    """
+    Converts string to bool type; enables command line 
+    arguments in the format of '--arg1 true --arg2 false'
+    """
+    if isinstance(v, bool):
+        return v
+    if v.lower() in ('yes', 'true', 't', 'y', '1'):
+        return True
+    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
+        return False
+    else:
+        raise argparse.ArgumentTypeError('Boolean value expected.')
+    
 parser = argparse.ArgumentParser(description='MambaDepth PyTorch implementation.', fromfile_prefix_chars='@')
 parser.convert_arg_line_to_args = convert_arg_line_to_args
 
@@ -44,11 +57,6 @@ parser.add_argument('--input_height',              type=int,   help='input heigh
 parser.add_argument('--input_width',               type=int,   help='input width',  default=640)
 parser.add_argument('--max_depth',                 type=float, help='maximum depth in estimation', default=10)
 
-# Search space
-parser.add_argument('--mlp_ratio',                 type=str2list, default=[4.0])
-parser.add_argument('--d_state',                   type=str2list, default=[64])
-parser.add_argument('--ssd_expand',                type=str2list, default=[2])
-
 # Log and save
 parser.add_argument('--log_directory',             type=str,   help='directory to save checkpoints and summaries', default='')
 parser.add_argument('--checkpoint_path',           type=str,   help='path to a checkpoint to load', default='')
@@ -57,7 +65,7 @@ parser.add_argument('--save_freq',                 type=int,   help='Checkpoint 
 
 # Training
 parser.add_argument('--weight_decay',              type=float, help='weight decay factor for optimization', default=1e-2)
-parser.add_argument('--resume',                               help='if used with checkpoint_path, will restart training from step zero', action='store_true')
+parser.add_argument('--retrain',                               help='if used with checkpoint_path, will restart training from step zero', action='store_true')
 parser.add_argument('--adam_eps',                  type=float, help='epsilon in Adam optimizer', default=1e-6)
 parser.add_argument('--batch_size',                type=int,   help='batch size', default=4)
 parser.add_argument('--num_epochs',                type=int,   help='number of epochs', default=50)
@@ -118,12 +126,6 @@ def online_eval(model, dataloader_eval, gpu, ngpus, post_process=False, logger=N
             if not has_valid_depth:
                 # print('Invalid depth. continue.')
                 continue
-
-            # random sample subnet
-            sample_config = sample_mamba_subnet(args)
-            model_module = unwrap_model(model)
-            model_module.backbone.set_sample_config(sample_config=sample_config)
-            # print(sample_config)
 
             pred_depth = model(image)
             if post_process:
@@ -206,7 +208,7 @@ def main_worker(gpu, ngpus_per_node, args):
         dist.init_process_group(backend=args.dist_backend, init_method=args.dist_url, world_size=args.world_size, rank=args.rank)
 
     # MambaDepth model
-    model = MambaDepth(args, version=args.encoder, inv_depth=False, max_depth=args.max_depth, pretrained=args.pretrain)
+    model = MambaDepth(version=args.encoder, inv_depth=False, max_depth=args.max_depth, pretrained=args.pretrain)
     if args.dynamic_tanh:  ### 替换归一化层
         from networks.dynamic_tanh import convert_ln_to_dyt
         model = convert_ln_to_dyt(model)
@@ -284,9 +286,9 @@ def main_worker(gpu, ngpus_per_node, args):
                 loc = 'cuda:{}'.format(args.gpu)
                 checkpoint = torch.load(args.checkpoint_path, map_location=loc)
             model.load_state_dict(checkpoint['model'])
-            if args.resume:
+            optimizer.load_state_dict(checkpoint['optimizer'])
+            if not args.retrain:
                 try:
-                    optimizer.load_state_dict(checkpoint['optimizer'])
                     global_step = checkpoint['global_step']
                     best_eval_measures_higher_better = checkpoint['best_eval_measures_higher_better'].cpu()
                     best_eval_measures_lower_better = checkpoint['best_eval_measures_lower_better'].cpu()
@@ -344,20 +346,13 @@ def main_worker(gpu, ngpus_per_node, args):
     while epoch < args.num_epochs:
         if args.distributed:
             dataloader.train_sampler.set_epoch(epoch)
-         
-        random.seed(epoch)
+
         for step, sample_batched in enumerate(dataloader.data):
             optimizer.zero_grad()
             before_op_time = time.time()
 
             image = torch.autograd.Variable(sample_batched['image'].cuda(args.gpu, non_blocking=True))
             depth_gt = torch.autograd.Variable(sample_batched['depth'].cuda(args.gpu, non_blocking=True))
-
-            # random sample subnet
-            sample_config = sample_mamba_subnet(args)
-            model_module = unwrap_model(model)
-            model_module.backbone.set_sample_config(sample_config=sample_config)
-            # print(sample_config)  # {'mlp_ratio': [3.5, 4.0, 1.0, 3.5], 'd_state': [64, 64, 48, -1], 'expand': [0.5, 4, 0.5, -1]}
 
             depth_est = model(image)
 
@@ -443,14 +438,6 @@ def main_worker(gpu, ngpus_per_node, args):
                                           'best_eval_steps': best_eval_steps
                                           }
                             torch.save(checkpoint, args.log_directory + '/' + args.model_name + model_save_name)
-                        if is_best and eval_metrics[i] == 'd1':
-                            symlink_path = os.path.join(args.log_directory, 'd1_best_weight.pth')
-                            target_path = os.path.join(args.log_directory, args.model_name + model_save_name)
-                            relative_target_path = os.path.relpath(target_path, start=os.path.dirname(symlink_path))
-                            if os.path.islink(symlink_path) or os.path.exists(symlink_path):
-                                os.remove(symlink_path)  # rm the old link
-                            os.symlink(relative_target_path, symlink_path)
-
                     eval_summary_writer.flush()
                 model.train()
                 block_print()
