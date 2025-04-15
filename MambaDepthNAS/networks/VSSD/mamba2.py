@@ -558,6 +558,15 @@ class VMAMBA2(nn.Module):
                 sample_expand_list[i] if i != len(self.layers) - 1 else None
             )
 
+    def get_sampled_params_numel(self, sample_config):
+        self.set_sample_config(sample_config)
+        numels = []
+        for name, module in self.named_modules():
+            if hasattr(module, 'calc_sampled_param_num'):
+                numels.append(module.calc_sampled_param_num())
+
+        return sum(numels)
+
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
             trunc_normal_(m.weight, std=.02)

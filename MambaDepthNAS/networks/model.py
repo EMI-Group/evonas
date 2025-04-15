@@ -180,12 +180,7 @@ class MambaDepth(nn.Module):
         self.disp_head1 = DispHead(input_dim=final_dims)
 
         self.up_mode = 'bilinear'
-        if self.up_mode == 'mask':
-            self.mask_head = nn.Sequential(
-                nn.Conv2d(final_dims, 64, 3, padding=1),
-                nn.ReLU(inplace=True),
-                nn.Conv2d(64, 16*9, 1, padding=0))
-
+        
         self.min_depth = min_depth
         self.max_depth = max_depth
         

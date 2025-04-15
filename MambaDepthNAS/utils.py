@@ -330,7 +330,6 @@ def sample_mamba_subnet(config, num_layers=4):
         dict: sample_config，包含每层的 mlp_ratio, d_state, expand 配置
     """
 
-
     sample_config = {
         'mlp_ratio': [random.choice(config.mlp_ratio) for _ in range(num_layers)],
         'd_state':   [random.choice(config.d_state) for _ in range(num_layers-1)],
@@ -345,3 +344,19 @@ def unwrap_model(model):
         return unwrap_model(model.ema)
     else:
         return model.module if hasattr(model, 'module') else model
+    
+
+def is_main_process():
+    return not dist.is_initialized() or dist.get_rank() == 0
+
+
+def count_invariant_params(model: nn.Module) -> int:
+    total_params = 0
+
+    for module in model.modules():
+        if hasattr(module, 'calc_sampled_param_num'):
+            continue  # skip entire sampled block
+        for param in module.parameters(recurse=False):
+                total_params += param.numel()
+
+    return total_params

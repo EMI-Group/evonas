@@ -80,7 +80,18 @@ class GConvSuper(nn.Conv2d):
 
         self.sample_scale = self.super_out_channels / self.sample_out_channels
         return self.samples
+    
+    def calc_sampled_param_num(self):
+        assert 'weight' in self.samples.keys()
+        weight_numel = self.samples['weight'].numel()
 
+        if self.samples['bias'] is not None:
+            bias_numel = self.samples['bias'].numel()
+        else:
+            bias_numel = 0
+
+        return weight_numel + bias_numel
+    
     def forward(self, x):
         self._sample_parameters()
         return F.conv2d(

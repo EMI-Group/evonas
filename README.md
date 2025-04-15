@@ -39,5 +39,5 @@ configs/
 - [ ] Training strategy (encoder-decoder lr, warmup lr, ema, Gradient Accumulation, amp)
 - [ ] Loading pretrained weight (encoder, decoder, ema)
 - [ ] SuperNet Training (Knowledge Distillation)
-- [x] NAS Search
+- [x] NAS Search (pymoo, param_cal)
 - [ ] Retrain
