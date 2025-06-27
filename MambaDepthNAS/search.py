@@ -27,6 +27,8 @@ from utils import post_process_depth, flip_lr, silog_loss, compute_errors, \
                        convert_arg_line_to_args, get_root_logger,  unwrap_model, str2bool, str2list, is_main_process, count_invariant_params
 from networks.model import MambaDepth
 
+
+'''NAS search script for MambaDepth.'''
 # (choose SpatialMamba) 
 # export PYTHONPATH=$PYTHONPATH:/data/code_yzh/Spatial-Mamba-main/kernels/dwconv2d
 # export PYTHONPATH=$PYTHONPATH:/data/code_yzh/Spatial-Mamba-main/kernels/selective_scan
@@ -117,7 +119,7 @@ space = {
 class NasCodec:
     def __init__(self, space):
         self.space = space
-        self.num_mlp = 4
+        self.num_mlp = 4  # TODO 之后扩展
         self.num_d = 3
         self.num_expand = 3
 
@@ -236,9 +238,10 @@ def make_eval_func(model, dataloader_eval, gpu, ngpus, post_process=False, logge
         )
     return eval_fn
 
+
 class IntegerFromFloatMutation(PolynomialMutation):
     '''float -> int'''
-    def __init__(self, prob=0.9, eta=20, at_least_once=False, **kwargs):
+    def __init__(self, prob=0.1, eta=20, at_least_once=False, **kwargs):
         super().__init__(prob=prob, eta=eta, at_least_once=at_least_once, **kwargs)
 
     def _do(self, problem, X, params=None, **kwargs):
@@ -303,7 +306,7 @@ class NasProblem(Problem):
             f_err_np = np.array(f_err, dtype=np.float32)
             params_np = np.array(params_list, dtype=np.float32)
 
-            self.logger.info(f"[Gen {gen}] d1_err: mean={f_err_np.mean():.4f}, min={f_err_np.min():.4f}, max={f_err_np.max():.4f}")
+            self.logger.info(f"[Gen {gen}] d1_err: mean={f_err_np.mean():.4f},  min={f_err_np.min():.4f},  max={f_err_np.max():.4f}")
             self.logger.info(f"[Gen {gen}] params: mean={params_np.mean():.4f}, min={params_np.min():.4f}, max={params_np.max():.4f}")
 
         
@@ -352,8 +355,8 @@ def main_worker(gpu, ngpus_per_node, args):
         model.cuda()
 
     '''show model'''
-    with open(os.path.join(args.log_directory, 'max_model.log'),'w') as f:
-        f.write(str(model))
+    # with open(os.path.join(args.log_directory, 'max_model.log'),'w') as f:
+    #     f.write(str(model))
     # assert False,'print model'
 
     ### load weight
@@ -396,8 +399,9 @@ def main_worker(gpu, ngpus_per_node, args):
     res = minimize(
         problem, method, termination=('n_gen', args.n_iter), save_history=True, verbose=False, seed=1274394)
     
+    ### show results
     if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
-        ### history
+
         for gen in res.history:
             pop_X = gen.pop.get("X")
             pop_F = gen.pop.get("F")
@@ -405,7 +409,6 @@ def main_worker(gpu, ngpus_per_node, args):
             logger.info(f"Solutions:\n{pop_X}")
             logger.info(f"Objective Values:\n{pop_F}")
 
-        ### result
         optimal_solutions = res.X.tolist()
         optimal_objective_values = res.F.tolist()
 

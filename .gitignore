@@ -4,10 +4,12 @@ mambavision_tiny_1k.pth.tar
 MLLA-T.pth
 vssd_tiny_best_ema.pth
 depth_anything_v2_vitl.pth
-vssd_maxsuper_best_ckpt_ema.pth
+vssd_supernet_imagenet_1k.pth
 model-*-best_*
 eval
 summaries
 /files
 /runs_v1
 /runs
+/checkpoints
+/other_files

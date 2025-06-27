@@ -13,14 +13,14 @@ import numpy as np
 from tqdm import tqdm
 from mmengine import Config
 from timm.scheduler.cosine_lr import CosineLRScheduler
-os.environ["CUDA_VISIBLE_DEVICES"]="7"
+os.environ["CUDA_VISIBLE_DEVICES"]="0,1,2,3"
 
 from tensorboardX import SummaryWriter
 
 from utils import post_process_depth, flip_lr, silog_loss, compute_errors, eval_metrics, \
-                       block_print, enable_print, normalize_result, inv_normalize, convert_arg_line_to_args, get_root_logger, sample_mamba_subnet, unwrap_model, str2bool, str2list, EasyDict, infer, sample_mamba_layers
+                       block_print, enable_print, normalize_result, inv_normalize, convert_arg_line_to_args, get_root_logger, sample_mamba_subnet, unwrap_model, str2bool, str2list, EasyDict, infer
 from networks.model import MambaDepth
-
+from networks.depthAny.builder import build_model
 
 '''fine-tune supernet on object dataset, e.g. KITTI, NYU'''
 # (choose SpatialMamba) 
@@ -30,7 +30,7 @@ from networks.model import MambaDepth
 # python MambaDepthNAS/train.py configs/supernet_train_kitti_0_maxnet.txt
 # python MambaDepthNAS/train.py configs/supernet_train_kitti_1_mlp_1.txt
 
-# python MambaDepthNAS/train.py configs/fine_tune_kitti_0_maxnet_nokd.txt
+# python MambaDepthNAS/train.py configs/fine_tune_kitti_0_maxnet.txt
 
 parser = argparse.ArgumentParser(description='MambaDepth PyTorch implementation.', fromfile_prefix_chars='@')
 parser.convert_arg_line_to_args = convert_arg_line_to_args
@@ -61,13 +61,10 @@ parser.add_argument('--log_freq',                  type=int,   help='Logging fre
 parser.add_argument('--save_freq',                 type=int,   help='Checkpoint saving frequency in global steps', default=5000)
 
 # Training
-parser.add_argument('--min_lr',                    type=float, help='', default=5e-6)
-parser.add_argument('--warmup_lr',                 type=float, help='', default=5e-7)
-parser.add_argument('--warmup_epochs',             type=int, help='', default=3)
-parser.add_argument('--weight_decay',              type=float, help='', default=0.05)
+parser.add_argument('--weight_decay',              type=float, help='weight decay factor for optimization', default=1e-2)
 parser.add_argument('--kd_ratio',                  type=float,   help='the ratio of knowledge distillation', default=0)
-parser.add_argument('--dynamic_batch_size',         type=int,   help='the number of dynamic batch size', default=1)
 parser.add_argument('--resume',                               help='if used with checkpoint_path, will restart training from step zero', action='store_true')
+parser.add_argument('--adam_eps',                  type=float, help='epsilon in Adam optimizer', default=1e-6)
 parser.add_argument('--batch_size',                type=int,   help='batch size', default=4)
 parser.add_argument('--num_epochs',                type=int,   help='number of epochs', default=50)
 parser.add_argument('--learning_rate',             type=float, help='initial learning rate', default=1e-4)
@@ -227,7 +224,6 @@ def main_worker(gpu, ngpus_per_node, args):
 
     ### teacher model
     if args.kd_ratio > 0:
-        from networks.depthAny.builder import build_model
         t_config = Config.fromfile(args.teacher_config)
         teacher_model = build_model(t_config)  # include loading pretrained weight
 
@@ -302,13 +298,10 @@ def main_worker(gpu, ngpus_per_node, args):
     best_eval_steps = np.zeros(9, dtype=np.int32)
 
     # Training parameters
-    backbone_params = list(model.module.backbone.parameters())
-    other_params = [p for n, p in model.module.named_parameters() if not n.startswith("backbone.")]
+    optimizer = torch.optim.Adam([{'params': model.module.parameters()}],
+                                lr=args.learning_rate)
 
-    optimizer = torch.optim.AdamW([{'params': backbone_params, 'lr': args.learning_rate},
-                                   {'params': other_params,    'lr': args.learning_rate}],
-                                     weight_decay=args.weight_decay)  # TODO 可学习VSSD的权重衰减策略
-    
+    model_just_loaded = False
     # if args.checkpoint_path != '':
     #     if os.path.isfile(args.checkpoint_path):
     #         logger.info("== Loading checkpoint '{}'".format(args.checkpoint_path))
@@ -332,6 +325,7 @@ def main_worker(gpu, ngpus_per_node, args):
     #         logger.info("== Loaded checkpoint '{}' (global_step {})".format(args.checkpoint_path, checkpoint['global_step']))
     #     else:
     #         logger.info("== No checkpoint found at '{}'".format(args.checkpoint_path))
+    #     model_just_loaded = True
     #     del checkpoint
 
     cudnn.benchmark = True
@@ -360,6 +354,7 @@ def main_worker(gpu, ngpus_per_node, args):
     duration = 0
 
     num_log_images = args.batch_size
+    end_learning_rate = args.end_learning_rate if args.end_learning_rate != -1 else 0.1 * args.learning_rate
 
     var_sum = [var.sum().item() for var in model.parameters() if var.requires_grad]
     var_cnt = len(var_sum)
@@ -369,10 +364,7 @@ def main_worker(gpu, ngpus_per_node, args):
 
     steps_per_epoch = len(dataloader.data)
     num_total_steps = args.num_epochs * steps_per_epoch
-    warmup_steps = args.warmup_epochs * steps_per_epoch
     epoch = global_step // steps_per_epoch
-
-    scheduler = CosineLRScheduler(optimizer, num_total_steps, t_mul=1., lr_min=args.min_lr, warmup_lr_init=args.warmup_lr, warmup_t=warmup_steps, cycle_limit=1, t_in_epochs=False, warmup_prefix=True)
 
     if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
         logger.info('args: '+str(args))
@@ -389,37 +381,39 @@ def main_worker(gpu, ngpus_per_node, args):
             image = torch.autograd.Variable(sample_batched['image'].cuda(args.gpu, non_blocking=True))
             depth_gt = torch.autograd.Variable(sample_batched['depth'].cuda(args.gpu, non_blocking=True))
 
+            # random sample subnet
+            sample_config = sample_mamba_subnet(args, num_stages=4)
+            model_module = unwrap_model(model)
+            model_module.backbone.set_sample_config(sample_config=sample_config)
+            # print(sample_config)  # {'mlp_ratio': [3.5, 4.0, 1.0, 3.5], 'd_state': [64, 64, 48, -1], 'expand': [0.5, 4, 0.5, -1]}
+
+            depth_est = model(image)
+
+            ### teacher model
             if args.kd_ratio > 0:
                 with torch.no_grad():
                     focal = torch.Tensor([721.5377]).cuda()
-                    depth_tea = infer(teacher_model, image, dataset=args.dataset, focal=focal)
+                    depth_tea = infer(teacher_model, image, dataset=args.dataset, focal=focal)  # TODO flip
+                    
+                    # pad = (left, right, top, bottom) (0, 0, 0, 2) is the best for me
+                    # print('depth_tea.shape', depth_tea.shape)
+                    # depth_tea = torch.nn.functional.pad(depth_tea, (0, 0, 0, 2), mode="replicate")
 
-            for _ in range(args.dynamic_batch_size):
-                # random sample subnet
-                sample_config = sample_mamba_subnet(args)
-                used_layer_list = sample_mamba_layers(depth_list=[2, 4, 8, 4], only_one_per_stage=True)
-                # print(f'used_layer_list: {used_layer_list}')
-                model_module = unwrap_model(model)
-                model_module.backbone.set_sample_config(sample_config=sample_config, used_layer_list=used_layer_list)
-                # print(sample_config)  # {'mlp_ratio': [3.5, 4.0, 1.0, 3.5], 'd_state': [64, 64, 48, -1], 'expand': [0.5, 4, 0.5, -1]}
-
-                depth_est = model(image)
-
-                loss = silog_criterion.forward(depth_est, depth_gt)
-
-                ### teacher model
-                if args.kd_ratio > 0:
-                    kd_loss = silog_criterion.forward(depth_est, depth_tea, interpolate=True)
-                    # print('kd_loss', kd_loss)
-                    loss = loss + args.kd_ratio*kd_loss
+            if args.kd_ratio > 0:
+                kd_loss = silog_criterion.forward(depth_est, depth_tea, interpolate=True)
+                # print('kd_loss', kd_loss)
                 
-                loss = loss / args.dynamic_batch_size
-                loss.backward()
+            loss = silog_criterion.forward(depth_est, depth_gt)
+            # print('ce_loss', loss)
 
-            scheduler.step_update(epoch * steps_per_epoch + step)
-            current_lr = optimizer.param_groups[1]['lr']  # for decoder
-            grad_norm = nn.utils.clip_grad_norm_(model.parameters(), 5.0)  # TODO max_norm need to set
-            print(f'grad norm: {grad_norm:.2f}')
+            if args.kd_ratio > 0:
+                loss = loss + args.kd_ratio*kd_loss
+            
+            loss.backward()
+            for param_group in optimizer.param_groups:
+                current_lr = (args.learning_rate - end_learning_rate) * (1 - global_step / num_total_steps) ** 0.9 + end_learning_rate
+                param_group['lr'] = current_lr
+
             optimizer.step()
 
             if global_step % 100 == 0:
@@ -430,7 +424,7 @@ def main_worker(gpu, ngpus_per_node, args):
                         return -1
 
             duration += time.time() - before_op_time
-            if global_step and global_step % args.log_freq == 0:
+            if global_step and global_step % args.log_freq == 0 and not model_just_loaded:
                 var_sum = [var.sum().item() for var in model.parameters() if var.requires_grad]
                 var_cnt = len(var_sum)
                 var_sum = np.sum(var_sum)
@@ -438,7 +432,8 @@ def main_worker(gpu, ngpus_per_node, args):
                 duration = 0
                 time_sofar = (time.time() - start_time) / 3600
                 training_time_left = (num_total_steps / global_step - 1.0) * time_sofar
-
+                # if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
+                #     print("{}".format(args.model_name))
                 print_string = 'GPU: {} | examples/s: {:4.2f} | loss: {:.5f} | var sum: {:.3f} avg: {:.3f} | time elapsed: {:.2f}h | time left: {:.2f}h'
                 logger.info(print_string.format(args.gpu, examples_per_sec, loss.item(), var_sum.item(), var_sum.item()/var_cnt, time_sofar, training_time_left))
 
@@ -454,7 +449,7 @@ def main_worker(gpu, ngpus_per_node, args):
                         writer.add_image('image/image/{}'.format(i), inv_normalize(image[i, :, :, :]).data, global_step)
                     writer.flush()
 
-            if args.do_online_eval and global_step and global_step % args.eval_freq == 0:
+            if args.do_online_eval and global_step and global_step % args.eval_freq == 0 and not model_just_loaded:
                 time.sleep(0.1)
                 model.eval()
                 with torch.no_grad():
@@ -505,6 +500,7 @@ def main_worker(gpu, ngpus_per_node, args):
                 block_print()
                 enable_print()
 
+            model_just_loaded = False
             global_step += 1
 
         epoch += 1

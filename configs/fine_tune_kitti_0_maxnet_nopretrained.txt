@@ -1,0 +1,38 @@
+--teacher_config ./configs/depth_any_kitti.py
+--mode train
+--model_name MambaDepth
+--encoder SuperNet
+--dataset kitti
+--data_path ../../dataset/KITTI/
+--gt_path ../../dataset/KITTI/data_depth_annotated/
+--filenames_file data_splits/eigen_train_files_with_gt.txt
+--batch_size 16
+--num_epochs 50
+--learning_rate 4e-5
+--weight_decay 1e-2
+--adam_eps 1e-3
+--num_threads 1
+--input_height 352
+--input_width 1216
+--max_depth 80
+--do_kb_crop
+--do_random_rotate
+--degree 1.0
+--log_directory ./runs/fine_tune_kitti/00_maxnet_old_lr_no_pretrain/
+--multiprocessing_distributed
+--dist_url tcp://127.0.0.1:2340
+
+--log_freq 1000
+--do_online_eval
+--eval_freq 1000
+--data_path_eval ../../dataset/KITTI/
+--gt_path_eval ../../dataset/KITTI/data_depth_annotated/
+--filenames_file_eval data_splits/eigen_test_files_with_gt.txt
+--min_depth_eval 1e-3
+--max_depth_eval 80
+--garg_crop
+
+--kd_ratio 0.3
+--mlp_ratio "[4.0]"
+--d_state "[64]"
+--ssd_expand "[4]"

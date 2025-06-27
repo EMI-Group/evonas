@@ -105,7 +105,13 @@ class silog_loss(nn.Module):
         super(silog_loss, self).__init__()
         self.variance_focus = variance_focus
 
-    def forward(self, depth_est, depth_gt, mask):
+    def forward(self, depth_est, depth_gt, interpolate=False):
+        if depth_gt.shape[-2:] != depth_est.shape[-2:] and interpolate:
+            depth_gt = nn.functional.interpolate(
+                depth_gt, depth_est.shape[-2:], mode='bilinear', align_corners=True)  # note:flip
+        # print(depth_est.shape, depth_gt.shape)
+        # assert False,'stop'
+        mask = (depth_gt > 0.001).bool()
         d = torch.log(depth_est[mask]) - torch.log(depth_gt[mask])
         return torch.sqrt((d ** 2).mean() - self.variance_focus * (d.mean() ** 2)) * 10.0
 
@@ -318,25 +324,46 @@ def str2list(v):
         raise argparse.ArgumentTypeError(f"Invalid list syntax: {v}")
     
 
-def sample_mamba_subnet(config, num_layers=4):
+def sample_mamba_subnet(config, num_stages=4):
     """
     随机采样一个 Mamba 子网络结构配置。
 
     Args:
         config: 含有 Search_Space 字段的配置对象（支持属性访问）
-        num_layers (int): 层数，默认 4
+        num_stages (int): 阶段数，默认 4
 
     Returns:
-        dict: sample_config，包含每层的 mlp_ratio, d_state, expand 配置
+        dict: sample_config，包含每阶段的 mlp_ratio, d_state, expand 配置
+        e.g. {'mlp_ratio': [3.5, 4.0, 1.0, 3.5], 'd_state': [64, 64, 48, -1], 'expand': [0.5, 4, 0.5, -1]}
     """
 
     sample_config = {
-        'mlp_ratio': [random.choice(config.mlp_ratio) for _ in range(num_layers)],
-        'd_state':   [random.choice(config.d_state) for _ in range(num_layers-1)],
-        'expand':    [random.choice(config.ssd_expand) for _ in range(num_layers-1)],
+        'mlp_ratio': [random.choice(config.mlp_ratio) for _ in range(num_stages)],
+        'd_state':   [random.choice(config.d_state) for _ in range(num_stages-1)],
+        'expand':    [random.choice(config.ssd_expand) for _ in range(num_stages-1)],
     }
     # Last stage is not SSD (is Self-Attention), so d_state and expand is not used!
     return sample_config
+
+def sample_mamba_layers(depth_list: list[int], only_one_per_stage: bool=False) -> list[list[int]]:
+    """ 随机采样 Mamba 网络的层数。
+    Args:
+        depth_list (List[int]): 含有每阶段可能的层数的列表，例如 [2, 4, 8, 4]
+        only_one_per_stage (bool): 如果为 True，则每阶段最多只有一个 1
+    Returns:
+        List[List[int]]: 每阶段的层数配置
+        e.g. used_layer_list: [[1, 0], [0, 0, 1, 0], [0, 0, 1, 0, 0, 0, 0, 0], [1, 0, 0, 0]]
+    """
+    used_layer_list = []
+    for depth in depth_list:
+        if only_one_per_stage:
+            layer_config = [0] * depth
+            selected_index = random.randint(0, depth - 1)
+            layer_config[selected_index] = 1
+        else:
+            layer_config = [random.randint(0, 1) for _ in range(depth)]
+        used_layer_list.append(layer_config)
+    return used_layer_list
 
 
 def unwrap_model(model):
@@ -360,3 +387,186 @@ def count_invariant_params(model: nn.Module) -> int:
                 total_params += param.numel()
 
     return total_params
+
+
+class EasyDict(dict):
+    """
+    EasyDict
+    Copy/pasted from https://github.com/makinacorpus/easydict
+    Original author: Mathieu Leplatre <mathieu.leplatre@makina-corpus.com>
+    """
+
+    """
+    Get attributes
+
+    >>> d = EasyDict({'foo':3})
+    >>> d['foo']
+    3
+    >>> d.foo
+    3
+    >>> d.bar
+    Traceback (most recent call last):
+    ...
+    AttributeError: 'EasyDict' object has no attribute 'bar'
+
+    Works recursively
+
+    >>> d = EasyDict({'foo':3, 'bar':{'x':1, 'y':2}})
+    >>> isinstance(d.bar, dict)
+    True
+    >>> d.bar.x
+    1
+
+    Bullet-proof
+
+    >>> EasyDict({})
+    {}
+    >>> EasyDict(d={})
+    {}
+    >>> EasyDict(None)
+    {}
+    >>> d = {'a': 1}
+    >>> EasyDict(**d)
+    {'a': 1}
+    >>> EasyDict((('a', 1), ('b', 2)))
+    {'a': 1, 'b': 2}
+    
+    Set attributes
+
+    >>> d = EasyDict()
+    >>> d.foo = 3
+    >>> d.foo
+    3
+    >>> d.bar = {'prop': 'value'}
+    >>> d.bar.prop
+    'value'
+    >>> d
+    {'foo': 3, 'bar': {'prop': 'value'}}
+    >>> d.bar.prop = 'newer'
+    >>> d.bar.prop
+    'newer'
+
+
+    Values extraction
+
+    >>> d = EasyDict({'foo':0, 'bar':[{'x':1, 'y':2}, {'x':3, 'y':4}]})
+    >>> isinstance(d.bar, list)
+    True
+    >>> from operator import attrgetter
+    >>> list(map(attrgetter('x'), d.bar))
+    [1, 3]
+    >>> list(map(attrgetter('y'), d.bar))
+    [2, 4]
+    >>> d = EasyDict()
+    >>> list(d.keys())
+    []
+    >>> d = EasyDict(foo=3, bar=dict(x=1, y=2))
+    >>> d.foo
+    3
+    >>> d.bar.x
+    1
+
+    Still like a dict though
+
+    >>> o = EasyDict({'clean':True})
+    >>> list(o.items())
+    [('clean', True)]
+
+    And like a class
+
+    >>> class Flower(EasyDict):
+    ...     power = 1
+    ...
+    >>> f = Flower()
+    >>> f.power
+    1
+    >>> f = Flower({'height': 12})
+    >>> f.height
+    12
+    >>> f['power']
+    1
+    >>> sorted(f.keys())
+    ['height', 'power']
+
+    update and pop items
+    >>> d = EasyDict(a=1, b='2')
+    >>> e = EasyDict(c=3.0, a=9.0)
+    >>> d.update(e)
+    >>> d.c
+    3.0
+    >>> d['c']
+    3.0
+    >>> d.get('c')
+    3.0
+    >>> d.update(a=4, b=4)
+    >>> d.b
+    4
+    >>> d.pop('a')
+    4
+    >>> d.a
+    Traceback (most recent call last):
+    ...
+    AttributeError: 'EasyDict' object has no attribute 'a'
+    """
+    def __init__(self, d=None, **kwargs):
+        if d is None:
+            d = {}
+        else:
+            d = dict(d)        
+        if kwargs:
+            d.update(**kwargs)
+        for k, v in d.items():
+            setattr(self, k, v)
+        # Class attributes
+        for k in self.__class__.__dict__.keys():
+            if not (k.startswith('__') and k.endswith('__')) and not k in ('update', 'pop'):
+                setattr(self, k, getattr(self, k))
+
+    def __setattr__(self, name, value):
+        if isinstance(value, (list, tuple)):
+            value = [self.__class__(x)
+                     if isinstance(x, dict) else x for x in value]
+        elif isinstance(value, dict) and not isinstance(value, self.__class__):
+            value = self.__class__(value)
+        super(EasyDict, self).__setattr__(name, value)
+        super(EasyDict, self).__setitem__(name, value)
+
+    __setitem__ = __setattr__
+
+    def update(self, e=None, **f):
+        d = e or dict()
+        d.update(f)
+        for k in d:
+            setattr(self, k, d[k])
+
+    def pop(self, k, d=None):
+        delattr(self, k)
+        return super(EasyDict, self).pop(k, d)
+
+@torch.no_grad()
+def infer(model, images, **kwargs):
+    """
+    only for depth anything
+    """
+    # images.shape = N, C, H, W
+    def get_depth_from_prediction(pred):
+        if isinstance(pred, torch.Tensor):
+            pred = pred  # pass
+        elif isinstance(pred, (list, tuple)):
+            pred = pred[-1]
+        elif isinstance(pred, dict):
+            pred = pred['metric_depth'] if 'metric_depth' in pred else pred['out']
+        else:
+            raise NotImplementedError(f"Unknown output type {type(pred)}")
+        return pred
+
+    pred1 = model(images, **kwargs)
+    pred1 = get_depth_from_prediction(pred1)
+
+    # pred2 = model(torch.flip(images, [3]), **kwargs)
+    # pred2 = get_depth_from_prediction(pred2)
+    # pred2 = torch.flip(pred2, [3])
+
+    # mean_pred = 0.5 * (pred1 + pred2)
+
+    return pred1

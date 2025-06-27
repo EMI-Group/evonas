@@ -449,6 +449,7 @@ class BasicLayer(nn.Module):
         self.input_resolution = input_resolution
         self.depth = depth
         self.use_checkpoint = use_checkpoint
+        self.used_layer_list = [1]*self.depth # used_layer_list is used to control which layer is used in the forward pass, 1 means used, 0 means not used
 
         # build blocks
         self.blocks = nn.ModuleList([
@@ -470,6 +471,7 @@ class BasicLayer(nn.Module):
             blk.set_sample_config(sample_mlp_ratio, sample_d_state, sample_expand)
 
     def forward(self, x, H=None, W=None):
+        '''note: if use Backbone_VMAMBA2, this forward function will be not used'''
         for blk in self.blocks:
             if self.use_checkpoint:
                 x = checkpoint.checkpoint(blk, x, H, W)
@@ -547,7 +549,7 @@ class VMAMBA2(nn.Module):
 
         self.apply(self._init_weights)
     
-    def set_sample_config(self, sample_config):
+    def set_sample_config(self, sample_config, used_layer_list=None):
         sample_mlp_ratio_list = sample_config['mlp_ratio']
         sample_d_state_list = sample_config['d_state']
         sample_expand_list = sample_config['expand']
@@ -557,6 +559,8 @@ class VMAMBA2(nn.Module):
                 sample_d_state_list[i] if i != len(self.layers) - 1 else None,
                 sample_expand_list[i] if i != len(self.layers) - 1 else None
             )
+            if used_layer_list is not None:
+                layer.used_layer_list = used_layer_list[i]
 
     def get_sampled_params_numel(self, sample_config):
         self.set_sample_config(sample_config)
@@ -658,7 +662,10 @@ class Backbone_VMAMBA2(VMAMBA2):
     def forward(self, x):
 
         def layer_forward(l, x, H=None, W=None):
-            for blk in l.blocks:
+            for id, blk in enumerate(l.blocks):
+                if l.used_layer_list[id] == 0:
+                    # print(f"Skip layer {id} in BasicLayer")
+                    continue
                 x = blk(x, H, W)
             if l.downsample is not None:
                 y = l.downsample(x, H, W)
