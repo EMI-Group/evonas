@@ -18,7 +18,7 @@ from pymoo.algorithms.moo.nsga2 import NSGA2
 from pymoo.operators.sampling.rnd import IntegerRandomSampling
 from pymoo.operators.mutation.pm import PolynomialMutation
 from pymoo.operators.crossover.pntx import TwoPointCrossover
-
+from dataloaders.dataloader import NewDataLoader
 
 os.environ["CUDA_VISIBLE_DEVICES"]="0,1"
 
@@ -105,10 +105,8 @@ if sys.argv.__len__() == 2:
 else:
     args = parser.parse_args()
 
-if args.dataset == 'kitti' or args.dataset == 'nyu':
-    from dataloaders.dataloader import NewDataLoader
-elif args.dataset == 'kittipred':
-    from dataloaders.dataloader_kittipred import NewDataLoader
+
+
 
 space = {
     'mlp_ratio': args.mlp_ratio,  # [0.5, 1.0, 2.0, 3.0, 3.5, 4.0]

@@ -107,7 +107,7 @@ class DinoVisionTransformer(nn.Module):
             dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]  # stochastic depth decay rule
 
         if ffn_layer == "mlp":
-            logger.info("using MLP layer as FFN")
+            print("using MLP layer as FFN") # yzh
             ffn_layer = Mlp
         elif ffn_layer == "swiglufused" or ffn_layer == "swiglu":
             logger.info("using SwiGLU layer as FFN")

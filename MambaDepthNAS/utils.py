@@ -108,9 +108,9 @@ class silog_loss(nn.Module):
     def forward(self, depth_est, depth_gt, interpolate=False):
         if depth_gt.shape[-2:] != depth_est.shape[-2:] and interpolate:
             depth_gt = nn.functional.interpolate(
-                depth_gt, depth_est.shape[-2:], mode='bilinear', align_corners=True)  # note:flip
+                depth_gt, depth_est.shape[-2:], mode='bilinear', align_corners=True)  # only for Depth Anything
         # print(depth_est.shape, depth_gt.shape)
-        # assert False,'stop'
+
         mask = (depth_gt > 0.001).bool()
         d = torch.log(depth_est[mask]) - torch.log(depth_gt[mask])
         return torch.sqrt((d ** 2).mean() - self.variance_focus * (d.mean() ** 2)) * 10.0
@@ -324,46 +324,42 @@ def str2list(v):
         raise argparse.ArgumentTypeError(f"Invalid list syntax: {v}")
     
 
-def sample_mamba_subnet(config, num_stages=4):
-    """
-    随机采样一个 Mamba 子网络结构配置。
+def compute_metrics(gt_depth, pred_depth, args):
+    pred_depth = pred_depth.cpu().numpy().squeeze()
+    gt_depth = gt_depth.cpu().numpy().squeeze()
 
-    Args:
-        config: 含有 Search_Space 字段的配置对象（支持属性访问）
-        num_stages (int): 阶段数，默认 4
+    if args.do_kb_crop:
+        height, width = gt_depth.shape
+        top_margin = int(height - 352)
+        left_margin = int((width - 1216) / 2)
+        pred_depth_uncropped = np.zeros((height, width), dtype=np.float32)
+        pred_depth_uncropped[top_margin:top_margin + 352, left_margin:left_margin + 1216] = pred_depth
+        pred_depth = pred_depth_uncropped
 
-    Returns:
-        dict: sample_config，包含每阶段的 mlp_ratio, d_state, expand 配置
-        e.g. {'mlp_ratio': [3.5, 4.0, 1.0, 3.5], 'd_state': [64, 64, 48, -1], 'expand': [0.5, 4, 0.5, -1]}
-    """
+    pred_depth[pred_depth < args.min_depth_eval] = args.min_depth_eval
+    pred_depth[pred_depth > args.max_depth_eval] = args.max_depth_eval
+    pred_depth[np.isinf(pred_depth)] = args.max_depth_eval
+    pred_depth[np.isnan(pred_depth)] = args.min_depth_eval
 
-    sample_config = {
-        'mlp_ratio': [random.choice(config.mlp_ratio) for _ in range(num_stages)],
-        'd_state':   [random.choice(config.d_state) for _ in range(num_stages-1)],
-        'expand':    [random.choice(config.ssd_expand) for _ in range(num_stages-1)],
-    }
-    # Last stage is not SSD (is Self-Attention), so d_state and expand is not used!
-    return sample_config
+    valid_mask = np.logical_and(gt_depth > args.min_depth_eval, gt_depth < args.max_depth_eval)
 
-def sample_mamba_layers(depth_list: list[int], only_one_per_stage: bool=False) -> list[list[int]]:
-    """ 随机采样 Mamba 网络的层数。
-    Args:
-        depth_list (List[int]): 含有每阶段可能的层数的列表，例如 [2, 4, 8, 4]
-        only_one_per_stage (bool): 如果为 True，则每阶段最多只有一个 1
-    Returns:
-        List[List[int]]: 每阶段的层数配置
-        e.g. used_layer_list: [[1, 0], [0, 0, 1, 0], [0, 0, 1, 0, 0, 0, 0, 0], [1, 0, 0, 0]]
-    """
-    used_layer_list = []
-    for depth in depth_list:
-        if only_one_per_stage:
-            layer_config = [0] * depth
-            selected_index = random.randint(0, depth - 1)
-            layer_config[selected_index] = 1
-        else:
-            layer_config = [random.randint(0, 1) for _ in range(depth)]
-        used_layer_list.append(layer_config)
-    return used_layer_list
+    if args.garg_crop or args.eigen_crop:
+        gt_height, gt_width = gt_depth.shape
+        eval_mask = np.zeros(valid_mask.shape)
+
+        if args.garg_crop:
+            eval_mask[int(0.40810811 * gt_height):int(0.99189189 * gt_height), int(0.03594771 * gt_width):int(0.96405229 * gt_width)] = 1
+
+        elif args.eigen_crop:
+            if args.dataset == 'kitti':
+                eval_mask[int(0.3324324 * gt_height):int(0.91351351 * gt_height), int(0.0359477 * gt_width):int(0.96405229 * gt_width)] = 1
+            elif args.dataset == 'nyu':
+                eval_mask[45:471, 41:601] = 1
+
+        valid_mask = np.logical_and(valid_mask, eval_mask)
+
+    measures = compute_errors(gt_depth[valid_mask], pred_depth[valid_mask])
+    return measures
 
 
 def unwrap_model(model):
@@ -545,9 +541,7 @@ class EasyDict(dict):
 
 @torch.no_grad()
 def infer(model, images, **kwargs):
-    """
-    only for depth anything
-    """
+    """Depth Anything inference function."""
     # images.shape = N, C, H, W
     def get_depth_from_prediction(pred):
         if isinstance(pred, torch.Tensor):

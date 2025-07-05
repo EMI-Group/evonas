@@ -12,6 +12,8 @@ Using **Once-for-All Progressive Shrinking**
 
 2025/6/27 update SuperNet Fine-tuning(Training strategy, Only sample one layer per stage, ...)
 
+2025/7/5 update SuperNet Fine-tuning(Training strategy, Open Depth space, Code encode-decode, Teacher model fixed)
+
 ------
 
 ##  Search Space

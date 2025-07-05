@@ -449,7 +449,7 @@ class BasicLayer(nn.Module):
         self.input_resolution = input_resolution
         self.depth = depth
         self.use_checkpoint = use_checkpoint
-        self.used_layer_list = [1]*self.depth # used_layer_list is used to control which layer is used in the forward pass, 1 means used, 0 means not used
+        self.sample_layer_num = self.depth
 
         # build blocks
         self.blocks = nn.ModuleList([
@@ -466,9 +466,10 @@ class BasicLayer(nn.Module):
         else:
             self.downsample = None
         
-    def set_sample_config(self, sample_mlp_ratio, sample_d_state=None, sample_expand=None):
+    def set_sample_config(self, sample_mlp_ratio, sample_d_state=None, sample_expand=None, sample_layer_num=None):
         for blk in self.blocks:
             blk.set_sample_config(sample_mlp_ratio, sample_d_state, sample_expand)
+        self.sample_layer_num = sample_layer_num if sample_layer_num is not None else self.depth
 
     def forward(self, x, H=None, W=None):
         '''note: if use Backbone_VMAMBA2, this forward function will be not used'''
@@ -549,18 +550,19 @@ class VMAMBA2(nn.Module):
 
         self.apply(self._init_weights)
     
-    def set_sample_config(self, sample_config, used_layer_list=None):
+    def set_sample_config(self, sample_config):
         sample_mlp_ratio_list = sample_config['mlp_ratio']
         sample_d_state_list = sample_config['d_state']
         sample_expand_list = sample_config['expand']
+        sample_depth_list = sample_config['depth']
         for i, layer in enumerate(self.layers):
             layer.set_sample_config(
                 sample_mlp_ratio_list[i],
                 sample_d_state_list[i] if i != len(self.layers) - 1 else None,
-                sample_expand_list[i] if i != len(self.layers) - 1 else None
+                sample_expand_list[i] if i != len(self.layers) - 1 else None,
+                sample_depth_list[i]
             )
-            if used_layer_list is not None:
-                layer.used_layer_list = used_layer_list[i]
+            
 
     def get_sampled_params_numel(self, sample_config):
         self.set_sample_config(sample_config)
@@ -663,8 +665,8 @@ class Backbone_VMAMBA2(VMAMBA2):
 
         def layer_forward(l, x, H=None, W=None):
             for id, blk in enumerate(l.blocks):
-                if l.used_layer_list[id] == 0:
-                    # print(f"Skip layer {id} in BasicLayer")
+                if id >= l.sample_layer_num:
+                    # print(f"Skip layer {id} in BasicLayer") # for debug
                     continue
                 x = blk(x, H, W)
             if l.downsample is not None:

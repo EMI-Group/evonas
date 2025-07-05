@@ -179,6 +179,7 @@ class PrepForMidas(object):
         net_h, net_w = img_size
         self.normalization = Normalize(
             mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+        assert False,'normalization should be done in dataloader'
         self.resizer = Resize(net_w, net_h, keep_aspect_ratio=keep_aspect_ratio, ensure_multiple_of=32, resize_method=resize_mode) \
             if do_resize else nn.Identity()
 

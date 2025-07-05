@@ -69,7 +69,7 @@ version_name = 'v1'
 # 模型结构 & 参数
 # ----------------------------------------
 model = 'zoedepth'
-img_size = [384, 518]
+img_size = [392, 518]
 midas_model_type = 'DPT_BEiT_L_384'
 inverse_midas = False
 train_midas = False

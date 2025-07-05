@@ -1,6 +1,5 @@
 import torch
 import torch.nn as nn
-import torch.nn.utils as utils
 import torch.backends.cudnn as cudnn
 import torch.distributed as dist
 import torch.multiprocessing as mp
@@ -12,170 +11,133 @@ import argparse
 import numpy as np
 from tqdm import tqdm
 from mmengine import Config
+from dataloaders.dataloader import NewDataLoader
 from timm.scheduler.cosine_lr import CosineLRScheduler
-os.environ["CUDA_VISIBLE_DEVICES"]="7"
+# os.environ["CUDA_VISIBLE_DEVICES"]="4,5,6,7"
 
 from tensorboardX import SummaryWriter
 
 from utils import post_process_depth, flip_lr, silog_loss, compute_errors, eval_metrics, \
-                       block_print, enable_print, normalize_result, inv_normalize, convert_arg_line_to_args, get_root_logger, sample_mamba_subnet, unwrap_model, str2bool, str2list, EasyDict, infer, sample_mamba_layers
+                       block_print, enable_print, normalize_result, inv_normalize, convert_arg_line_to_args, get_root_logger, unwrap_model, str2list, infer, compute_metrics
 from networks.model import MambaDepth
-
+from search_space import MambaSearchSpace
 
 '''fine-tune supernet on object dataset, e.g. KITTI, NYU'''
 # (choose SpatialMamba) 
 # export PYTHONPATH=$PYTHONPATH:/data/code_yzh/Spatial-Mamba-main/kernels/dwconv2d
 # export PYTHONPATH=$PYTHONPATH:/data/code_yzh/Spatial-Mamba-main/kernels/selective_scan
 
-# python MambaDepthNAS/train.py configs/supernet_train_kitti_0_maxnet.txt
-# python MambaDepthNAS/train.py configs/supernet_train_kitti_1_mlp_1.txt
 
-# python MambaDepthNAS/train.py configs/fine_tune_kitti_0_maxnet_nokd.txt
+# python MambaDepthNAS/train.py configs/exp02_kd/01_maxnet_kd01.txt
 
-parser = argparse.ArgumentParser(description='MambaDepth PyTorch implementation.', fromfile_prefix_chars='@')
-parser.convert_arg_line_to_args = convert_arg_line_to_args
-parser.add_argument("--teacher_config",                    type=str,   required=True)
-parser.add_argument('--mode',                      type=str,   help='train or test', default='train')
-parser.add_argument('--model_name',                type=str,   help='model name', default='MambaDepth')
-parser.add_argument('--encoder',                   type=str,   help='type of encoder, base07, large07', default='large07')
-parser.add_argument('--pretrain',                  type=str,   help='path of pretrained encoder', default=None)
+def parse_args():
+    parser = argparse.ArgumentParser(description='MambaDepth PyTorch implementation.', fromfile_prefix_chars='@')
+    parser.convert_arg_line_to_args = convert_arg_line_to_args
+    parser.add_argument("--teacher_config",            type=str,   required=True)
+    parser.add_argument('--model_name',                type=str,   help='model name', default='MambaDepth')
+    parser.add_argument('--encoder',                   type=str,   help='type of encoder, base07, large07', default='large07')
+    parser.add_argument('--pretrain',                  type=str,   help='path of pretrained encoder', default=None)
+    parser.add_argument('--devices',                    type=str, default='0,1', help='CUDA_VISIBLE_DEVICES value, e.g., "0" or "0,1"')
 
-# Dataset
-parser.add_argument('--dataset',                   type=str,   help='dataset to train on, kitti or nyu', default='nyu')
-parser.add_argument('--data_path',                 type=str,   help='path to the data', required=True)
-parser.add_argument('--gt_path',                   type=str,   help='path to the groundtruth data', required=True)
-parser.add_argument('--filenames_file',            type=str,   help='path to the filenames text file', required=True)
-parser.add_argument('--input_height',              type=int,   help='input height', default=480)
-parser.add_argument('--input_width',               type=int,   help='input width',  default=640)
-parser.add_argument('--max_depth',                 type=float, help='maximum depth in estimation', default=10)
+    # Dataset
+    parser.add_argument('--dataset',                   type=str,   help='dataset to train on, kitti or nyu', default='nyu')
+    parser.add_argument('--data_path',                 type=str,   help='path to the data', required=True)
+    parser.add_argument('--gt_path',                   type=str,   help='path to the groundtruth data', required=True)
+    parser.add_argument('--filenames_file',            type=str,   help='path to the filenames text file', required=True)
+    parser.add_argument('--input_height',              type=int,   help='input height', default=480)
+    parser.add_argument('--input_width',               type=int,   help='input width',  default=640)
+    parser.add_argument('--max_depth',                 type=float, help='maximum depth in estimation', default=10)
 
-# Search space
-parser.add_argument('--mlp_ratio',                 type=str2list, default=[4.0])
-parser.add_argument('--d_state',                   type=str2list, default=[64])
-parser.add_argument('--ssd_expand',                type=str2list, default=[2])
+    # Search space
+    parser.add_argument('--mlp_ratio',                 type=str2list, default=[4.0])
+    parser.add_argument('--d_state',                   type=str2list, default=[64])
+    parser.add_argument('--ssd_expand',                type=str2list, default=[2])
+    parser.add_argument('--open_depth',                action='store_true', help='if set, will open depth sampling, otherwise use fixed depth for all stages')
 
-# Log and save
-parser.add_argument('--log_directory',             type=str,   help='directory to save checkpoints and summaries', default='')
-# parser.add_argument('--checkpoint_path',           type=str,   help='path to a checkpoint to load', default='')
-parser.add_argument('--log_freq',                  type=int,   help='Logging frequency in global steps', default=100)
-parser.add_argument('--save_freq',                 type=int,   help='Checkpoint saving frequency in global steps', default=5000)
+    # Log and save
+    parser.add_argument('--log_directory',             type=str,   help='directory to save checkpoints and summaries', default='')
+    # parser.add_argument('--checkpoint_path',           type=str,   help='path to a checkpoint to load', default='')
+    parser.add_argument('--log_freq',                  type=int,   help='Logging frequency in global steps', default=100)
+    parser.add_argument('--save_freq',                 type=int,   help='Checkpoint saving frequency in global steps', default=5000)
 
-# Training
-parser.add_argument('--min_lr',                    type=float, help='', default=5e-6)
-parser.add_argument('--warmup_lr',                 type=float, help='', default=5e-7)
-parser.add_argument('--warmup_epochs',             type=int, help='', default=3)
-parser.add_argument('--weight_decay',              type=float, help='', default=0.05)
-parser.add_argument('--kd_ratio',                  type=float,   help='the ratio of knowledge distillation', default=0)
-parser.add_argument('--dynamic_batch_size',         type=int,   help='the number of dynamic batch size', default=1)
-parser.add_argument('--resume',                               help='if used with checkpoint_path, will restart training from step zero', action='store_true')
-parser.add_argument('--batch_size',                type=int,   help='batch size', default=4)
-parser.add_argument('--num_epochs',                type=int,   help='number of epochs', default=50)
-parser.add_argument('--learning_rate',             type=float, help='initial learning rate', default=1e-4)
-parser.add_argument('--end_learning_rate',         type=float, help='end learning rate', default=-1)
-parser.add_argument('--variance_focus',            type=float, help='lambda in paper: [0, 1], higher value more focus on minimizing variance of error', default=0.85)
+    # Training
+    parser.add_argument('--min_lr',                    type=float, help='', default=5e-6)
+    parser.add_argument('--warmup_lr',                 type=float, help='', default=5e-7)
+    parser.add_argument('--warmup_epochs',             type=int, help='', default=3)
+    parser.add_argument('--weight_decay',              type=float, help='', default=0.05)
+    parser.add_argument('--kd_ratio',                  type=float,   help='the ratio of knowledge distillation', default=0)
+    parser.add_argument('--dynamic_batch_size',         type=int,   help='the number of dynamic batch size', default=1)
+    parser.add_argument('--resume',                               help='if used with checkpoint_path, will restart training from step zero', action='store_true')
+    parser.add_argument('--batch_size',                type=int,   help='this is the global batch size for all gpus', default=4)
+    parser.add_argument('--num_epochs',                type=int,   help='number of epochs', default=50)
+    parser.add_argument('--learning_rate',             type=float, help='initial learning rate', default=1e-4)
+    parser.add_argument('--variance_focus',            type=float, help='lambda in paper: [0, 1], higher value more focus on minimizing variance of error', default=0.85)
+    parser.add_argument('--max_norm',                  type=float, help='maximum norm for gradient clipping, (grad clip is not used if -1 or 0)', default=5.0)
+    parser.add_argument('--optimizer',                 type=str,   help='optimizer to use, adam or adamw', default='adamw')
 
-# Preprocessing
-parser.add_argument('--do_random_rotate',                      help='if set, will perform random rotation for augmentation', action='store_true')
-parser.add_argument('--degree',                    type=float, help='random rotation maximum degree', default=2.5)
-parser.add_argument('--do_kb_crop',                            help='if set, crop input images as kitti benchmark images', action='store_true')
-parser.add_argument('--use_right',                             help='if set, will randomly use right images when train on KITTI', action='store_true')
+    # Preprocessing
+    parser.add_argument('--do_random_rotate',                      help='if set, will perform random rotation for augmentation', action='store_true')
+    parser.add_argument('--degree',                    type=float, help='random rotation maximum degree', default=2.5)
+    parser.add_argument('--do_kb_crop',                            help='if set, crop input images as kitti benchmark images', action='store_true')
+    parser.add_argument('--use_right',                             help='if set, will randomly use right images when train on KITTI', action='store_true')
 
-# Multi-gpu training
-parser.add_argument('--num_threads',               type=int,   help='number of threads to use for data loading', default=1)
-parser.add_argument('--world_size',                type=int,   help='number of nodes for distributed training', default=1)
-parser.add_argument('--rank',                      type=int,   help='node rank for distributed training', default=0)
-parser.add_argument('--dist_url',                  type=str,   help='url used to set up distributed training', default='tcp://127.0.0.1:1234')
-parser.add_argument('--dist_backend',              type=str,   help='distributed backend', default='nccl')
-parser.add_argument('--gpu',                       type=int,   help='GPU id to use.', default=None)
-parser.add_argument('--multiprocessing_distributed',           help='Use multi-processing distributed training to launch '
-                                                                    'N processes per node, which has N GPUs. This is the '
-                                                                    'fastest way to use PyTorch for either single node or '
-                                                                    'multi node data parallel training', action='store_true',)
-# Online eval
-parser.add_argument('--do_online_eval',                        help='if set, perform online eval in every eval_freq steps', action='store_true')
-parser.add_argument('--data_path_eval',            type=str,   help='path to the data for online evaluation', required=False)
-parser.add_argument('--gt_path_eval',              type=str,   help='path to the groundtruth data for online evaluation', required=False)
-parser.add_argument('--filenames_file_eval',       type=str,   help='path to the filenames text file for online evaluation', required=False)
-parser.add_argument('--min_depth_eval',            type=float, help='minimum depth for evaluation', default=1e-3)
-parser.add_argument('--max_depth_eval',            type=float, help='maximum depth for evaluation', default=80)
-parser.add_argument('--eigen_crop',                            help='if set, crops according to Eigen NIPS14', action='store_true')
-parser.add_argument('--garg_crop',                             help='if set, crops according to Garg  ECCV16', action='store_true')
-parser.add_argument('--eval_freq',                 type=int,   help='Online evaluation frequency in global steps', default=500)
-parser.add_argument('--eval_summary_directory',    type=str,   help='output directory for eval summary,'
-                                                                    'if empty outputs to checkpoint folder', default='')
-parser.add_argument('--dynamic_tanh',              type=str2bool, default=False)
-# parser.add_argument('--tearcher_pretrained_weight', type=str,   help='path of pretrained tearcher model', default=None)
+    # Multi-gpu training
+    parser.add_argument('--num_threads',               type=int,   help='number of threads to use for data loading', default=1)
+    parser.add_argument('--world_size',                type=int,   help='number of nodes for distributed training', default=1)
+    parser.add_argument('--rank',                      type=int,   help='node rank for distributed training', default=0)
+    parser.add_argument('--dist_url',                  type=str,   help='url used to set up distributed training', default='tcp://127.0.0.1:1234')
+    parser.add_argument('--dist_backend',              type=str,   help='distributed backend', default='nccl')
+    parser.add_argument('--gpu',                       type=int,   help='GPU id to use.', default=None)
+    parser.add_argument('--multiprocessing_distributed',           help='Use multi-processing distributed training to launch '
+                                                                        'N processes per node, which has N GPUs. This is the '
+                                                                        'fastest way to use PyTorch for either single node or '
+                                                                        'multi node data parallel training', action='store_true',)
+    # Online eval
+    parser.add_argument('--do_online_eval',                        help='if set, perform online eval in every eval_freq steps', action='store_true')
+    parser.add_argument('--data_path_eval',            type=str,   help='path to the data for online evaluation', required=False)
+    parser.add_argument('--gt_path_eval',              type=str,   help='path to the groundtruth data for online evaluation', required=False)
+    parser.add_argument('--filenames_file_eval',       type=str,   help='path to the filenames text file for online evaluation', required=False)
+    parser.add_argument('--min_depth_eval',            type=float, help='minimum depth for evaluation', default=1e-3)
+    parser.add_argument('--max_depth_eval',            type=float, help='maximum depth for evaluation', default=80)
+    parser.add_argument('--eigen_crop',                            help='if set, crops according to Eigen NIPS14', action='store_true')
+    parser.add_argument('--garg_crop',                             help='if set, crops according to Garg  ECCV16', action='store_true')
+    parser.add_argument('--eval_freq',                 type=int,   help='Online evaluation frequency in global steps', default=500)
+    parser.add_argument('--eval_summary_directory',    type=str,   help='output directory for eval summary,'
+                                                                        'if empty outputs to checkpoint folder', default='')
+    # experimental
+    parser.add_argument('--dynamic_tanh',              action='store_true', help='if set, will use dynamic tanh for normalization')
 
-if sys.argv.__len__() == 2:
-    arg_filename_with_prefix = '@' + sys.argv[1]
-    args = parser.parse_args([arg_filename_with_prefix])
-else:
-    args = parser.parse_args()
-
-if args.dataset == 'kitti' or args.dataset == 'nyu':
-    from dataloaders.dataloader import NewDataLoader
-elif args.dataset == 'kittipred':
-    from dataloaders.dataloader_kittipred import NewDataLoader
+    if sys.argv.__len__() == 2:
+        arg_filename_with_prefix = '@' + sys.argv[1]
+        args = parser.parse_args([arg_filename_with_prefix])
+    else:
+        args = parser.parse_args()
+    
+    return args
 
 
-def online_eval(model, dataloader_eval, gpu, ngpus, post_process=False, logger=None):
+@torch.no_grad()
+def online_eval(args, model, dataloader_eval, gpu, ngpus, post_process=False, logger=None, ss=None):
     eval_measures = torch.zeros(10).cuda(device=gpu)
     for _, eval_sample_batched in enumerate(tqdm(dataloader_eval.data)):
-        with torch.no_grad():
-            image = torch.autograd.Variable(eval_sample_batched['image'].cuda(gpu, non_blocking=True))
-            gt_depth = eval_sample_batched['depth']
-            has_valid_depth = eval_sample_batched['has_valid_depth']
-            if not has_valid_depth:
-                # print('Invalid depth. continue.')
-                continue
+        image    = eval_sample_batched['image'].cuda(gpu, non_blocking=True)
+        gt_depth = eval_sample_batched['depth'].cuda(gpu, non_blocking=True)
+        if not eval_sample_batched['has_valid_depth']:
+            # print('Invalid depth. continue.')
+            continue
+        # random sample subnet
+        sample_config = ss.sample(n_samples=1)[0]
+        model_module = unwrap_model(model)
+        model_module.backbone.set_sample_config(sample_config=sample_config)
+        # print(sample_config)
 
-            # random sample subnet
-            sample_config = sample_mamba_subnet(args)
-            model_module = unwrap_model(model)
-            model_module.backbone.set_sample_config(sample_config=sample_config)
-            # print(sample_config)
-
-            pred_depth = model(image)
-            if post_process:
-                image_flipped = flip_lr(image)
-                pred_depth_flipped = model(image_flipped)
-                pred_depth = post_process_depth(pred_depth, pred_depth_flipped)
-
-            pred_depth = pred_depth.cpu().numpy().squeeze()
-            gt_depth = gt_depth.cpu().numpy().squeeze()
-
-        if args.do_kb_crop:
-            height, width = gt_depth.shape
-            top_margin = int(height - 352)
-            left_margin = int((width - 1216) / 2)
-            pred_depth_uncropped = np.zeros((height, width), dtype=np.float32)
-            pred_depth_uncropped[top_margin:top_margin + 352, left_margin:left_margin + 1216] = pred_depth
-            pred_depth = pred_depth_uncropped
-
-        pred_depth[pred_depth < args.min_depth_eval] = args.min_depth_eval
-        pred_depth[pred_depth > args.max_depth_eval] = args.max_depth_eval
-        pred_depth[np.isinf(pred_depth)] = args.max_depth_eval
-        pred_depth[np.isnan(pred_depth)] = args.min_depth_eval
-
-        valid_mask = np.logical_and(gt_depth > args.min_depth_eval, gt_depth < args.max_depth_eval)
-
-        if args.garg_crop or args.eigen_crop:
-            gt_height, gt_width = gt_depth.shape
-            eval_mask = np.zeros(valid_mask.shape)
-
-            if args.garg_crop:
-                eval_mask[int(0.40810811 * gt_height):int(0.99189189 * gt_height), int(0.03594771 * gt_width):int(0.96405229 * gt_width)] = 1
-
-            elif args.eigen_crop:
-                if args.dataset == 'kitti':
-                    eval_mask[int(0.3324324 * gt_height):int(0.91351351 * gt_height), int(0.0359477 * gt_width):int(0.96405229 * gt_width)] = 1
-                elif args.dataset == 'nyu':
-                    eval_mask[45:471, 41:601] = 1
-
-            valid_mask = np.logical_and(valid_mask, eval_mask)
-
-        measures = compute_errors(gt_depth[valid_mask], pred_depth[valid_mask])
-
+        pred_depth = model(image)
+        if post_process:
+            image_flipped = flip_lr(image)
+            pred_depth_flipped = model(image_flipped)
+            pred_depth = post_process_depth(pred_depth, pred_depth_flipped)
+        # update eval measures
+        measures = compute_metrics(gt_depth, pred_depth, args)
         eval_measures[:9] += torch.tensor(measures).cuda(device=gpu)
         eval_measures[9] += 1
 
@@ -191,9 +153,6 @@ def online_eval(model, dataloader_eval, gpu, ngpus, post_process=False, logger=N
         logger.info("{:>7}, {:>7}, {:>7}, {:>7}, {:>7}, {:>7}, {:>7}, {:>7}, {:>7}".format('silog', 'abs_rel', 'log10', 'rms',
                                                                                      'sq_rel', 'log_rms', 'd1', 'd2',
                                                                                      'd3'))
-        # for i in range(8):
-        #     print('{:7.4f}, '.format(eval_measures_cpu[i]), end='')
-        # print('{:7.4f}'.format(eval_measures_cpu[8]))
         logger.info(", ".join(["{:7.4f}".format(eval_measures_cpu[i]) for i in range(9)]))
         return eval_measures_cpu
 
@@ -214,6 +173,9 @@ def main_worker(gpu, ngpus_per_node, args):
         if args.multiprocessing_distributed:
             args.rank = args.rank * ngpus_per_node + gpu
         dist.init_process_group(backend=args.dist_backend, init_method=args.dist_url, world_size=args.world_size, rank=args.rank)
+
+    if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
+        logger.info('args: '+str(args))
 
     # MambaDepth model
     model = MambaDepth(args, version=args.encoder, inv_depth=False, max_depth=args.max_depth, pretrained=args.pretrain)
@@ -243,17 +205,17 @@ def main_worker(gpu, ngpus_per_node, args):
         if args.gpu is not None:
             torch.cuda.set_device(args.gpu)
             model.cuda(args.gpu)
-            args.batch_size = int(args.batch_size / ngpus_per_node)
+            args.batch_size = int(args.batch_size / ngpus_per_node)  # note that args.batch_size is the total batch size
             model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=True)
             if args.kd_ratio > 0:
                 teacher_model.cuda(args.gpu)
-                teacher_model = torch.nn.parallel.DistributedDataParallel(teacher_model, device_ids=[args.gpu], find_unused_parameters=False)
+                teacher_model = torch.nn.parallel.DistributedDataParallel(teacher_model, device_ids=[args.gpu], broadcast_buffers=False)
         else:
             model.cuda()
             model = torch.nn.parallel.DistributedDataParallel(model, find_unused_parameters=True)
             if args.kd_ratio > 0:
                 teacher_model.cuda()
-                teacher_model = torch.nn.parallel.DistributedDataParallel(teacher_model, find_unused_parameters=False)
+                teacher_model = torch.nn.parallel.DistributedDataParallel(teacher_model, broadcast_buffers=False)
     else:
         model = torch.nn.DataParallel(model)
         model.cuda()
@@ -262,8 +224,8 @@ def main_worker(gpu, ngpus_per_node, args):
             teacher_model.cuda()
 
     if args.kd_ratio > 0:
-        teacher_model.requires_grad_(False)
         teacher_model.eval()
+        teacher_model.requires_grad_(False)
 
     '''show model'''
     # with open(os.path.join(args.log_directory, 'max_model.log'),'w') as f:
@@ -302,47 +264,24 @@ def main_worker(gpu, ngpus_per_node, args):
     best_eval_steps = np.zeros(9, dtype=np.int32)
 
     # Training parameters
-    backbone_params = list(model.module.backbone.parameters())
-    other_params = [p for n, p in model.module.named_parameters() if not n.startswith("backbone.")]
+    if args.optimizer == 'adamw':
+        backbone_params = list(model.module.backbone.parameters())
+        other_params = [p for n, p in model.module.named_parameters() if not n.startswith("backbone.")]
 
-    optimizer = torch.optim.AdamW([{'params': backbone_params, 'lr': args.learning_rate},
-                                   {'params': other_params,    'lr': args.learning_rate}],
-                                     weight_decay=args.weight_decay)  # TODO 可学习VSSD的权重衰减策略
+        optimizer = torch.optim.AdamW([{'params': backbone_params, 'lr': args.learning_rate},
+                                    {'params': other_params,    'lr': args.learning_rate}],
+                                        weight_decay=args.weight_decay)  # TODO 可学习VSSD的权重衰减策略
+    elif args.optimizer == 'adam':
+        optimizer = torch.optim.Adam([{'params': model.module.parameters()}],
+                                lr=args.learning_rate)   
+    else:
+        raise ValueError("Unsupported optimizer: {}".format(args.optimizer))
     
-    # if args.checkpoint_path != '':
-    #     if os.path.isfile(args.checkpoint_path):
-    #         logger.info("== Loading checkpoint '{}'".format(args.checkpoint_path))
-    #         if args.gpu is None:
-    #             checkpoint = torch.load(args.checkpoint_path)
-    #         else:
-    #             loc = 'cuda:{}'.format(args.gpu)
-    #             checkpoint = torch.load(args.checkpoint_path, map_location=loc)
-    #         model.load_state_dict(checkpoint['model'])
-    #         if args.resume:
-    #             assert False,'Temporary ban'
-    #             try:
-    #                 optimizer.load_state_dict(checkpoint['optimizer'])
-    #                 global_step = checkpoint['global_step']
-    #                 best_eval_measures_higher_better = checkpoint['best_eval_measures_higher_better'].cpu()
-    #                 best_eval_measures_lower_better = checkpoint['best_eval_measures_lower_better'].cpu()
-    #                 best_eval_steps = checkpoint['best_eval_steps']
-    #             except KeyError:
-    #                 logger.info("Could not load values for online evaluation")
-
-    #         logger.info("== Loaded checkpoint '{}' (global_step {})".format(args.checkpoint_path, checkpoint['global_step']))
-    #     else:
-    #         logger.info("== No checkpoint found at '{}'".format(args.checkpoint_path))
-    #     del checkpoint
 
     cudnn.benchmark = True
 
     dataloader = NewDataLoader(args, 'train')
     dataloader_eval = NewDataLoader(args, 'online_eval')
-
-    # ===== Evaluation before training ======
-    # model.eval()
-    # with torch.no_grad():
-    #     eval_measures = online_eval(model, dataloader_eval, gpu, ngpus_per_node, post_process=True)
 
     # Logging
     if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
@@ -372,56 +311,65 @@ def main_worker(gpu, ngpus_per_node, args):
     warmup_steps = args.warmup_epochs * steps_per_epoch
     epoch = global_step // steps_per_epoch
 
-    scheduler = CosineLRScheduler(optimizer, num_total_steps, t_mul=1., lr_min=args.min_lr, warmup_lr_init=args.warmup_lr, warmup_t=warmup_steps, cycle_limit=1, t_in_epochs=False, warmup_prefix=True)
+    if args.optimizer == 'adamw':
+        scheduler = CosineLRScheduler(optimizer, num_total_steps, t_mul=1., lr_min=args.min_lr, warmup_lr_init=args.warmup_lr, warmup_t=warmup_steps, cycle_limit=1, t_in_epochs=False, warmup_prefix=True)
+    elif args.optimizer == 'adam':
+        end_learning_rate = 0.1 * args.learning_rate
 
-    if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
-        logger.info('args: '+str(args))
+    ss = MambaSearchSpace(args.mlp_ratio, args.d_state, args.ssd_expand, open_depth=args.open_depth)
 
+    # training
     while epoch < args.num_epochs:
         if args.distributed:
             dataloader.train_sampler.set_epoch(epoch)
          
         random.seed(epoch)
+        np.random.seed(epoch)
         for step, sample_batched in enumerate(dataloader.data):
             optimizer.zero_grad()
             before_op_time = time.time()
 
-            image = torch.autograd.Variable(sample_batched['image'].cuda(args.gpu, non_blocking=True))
-            depth_gt = torch.autograd.Variable(sample_batched['depth'].cuda(args.gpu, non_blocking=True))
+            image    = sample_batched['image'].cuda(args.gpu, non_blocking=True)
+            depth_gt = sample_batched['depth'].cuda(args.gpu, non_blocking=True)
 
             if args.kd_ratio > 0:
                 with torch.no_grad():
-                    focal = torch.Tensor([721.5377]).cuda()
-                    depth_tea = infer(teacher_model, image, dataset=args.dataset, focal=focal)
+                    teacher_model.eval()
+                    depth_tea = infer(teacher_model, image, dataset=args.dataset, focal=None)
 
             for _ in range(args.dynamic_batch_size):
                 # random sample subnet
-                sample_config = sample_mamba_subnet(args)
-                used_layer_list = sample_mamba_layers(depth_list=[2, 4, 8, 4], only_one_per_stage=True)
-                # print(f'used_layer_list: {used_layer_list}')
+                sample_config = ss.sample(n_samples=1)[0]
                 model_module = unwrap_model(model)
-                model_module.backbone.set_sample_config(sample_config=sample_config, used_layer_list=used_layer_list)
+                model_module.backbone.set_sample_config(sample_config=sample_config)
                 # print(sample_config)  # {'mlp_ratio': [3.5, 4.0, 1.0, 3.5], 'd_state': [64, 64, 48, -1], 'expand': [0.5, 4, 0.5, -1]}
 
                 depth_est = model(image)
-
                 loss = silog_criterion.forward(depth_est, depth_gt)
 
                 ### teacher model
                 if args.kd_ratio > 0:
                     kd_loss = silog_criterion.forward(depth_est, depth_tea, interpolate=True)
                     # print('kd_loss', kd_loss)
-                    loss = loss + args.kd_ratio*kd_loss
+                    loss = loss + args.kd_ratio * kd_loss
                 
                 loss = loss / args.dynamic_batch_size
                 loss.backward()
 
-            scheduler.step_update(epoch * steps_per_epoch + step)
-            current_lr = optimizer.param_groups[1]['lr']  # for decoder
-            grad_norm = nn.utils.clip_grad_norm_(model.parameters(), 5.0)  # TODO max_norm need to set
-            print(f'grad norm: {grad_norm:.2f}')
+            if args.optimizer == 'adamw':
+                scheduler.step_update(epoch * steps_per_epoch + step)
+                current_lr = optimizer.param_groups[1]['lr']  # for decoder
+            elif args.optimizer == 'adam':
+                for param_group in optimizer.param_groups:
+                    current_lr = (args.learning_rate - end_learning_rate) * (1 - global_step / num_total_steps) ** 0.9 + end_learning_rate
+                    param_group['lr'] = current_lr
+
+            if args.max_norm > 0:
+                grad_norm = nn.utils.clip_grad_norm_(model.parameters(), args.max_norm)  # TODO max_norm need to set
+            # print(f'grad norm: {grad_norm:.2f}')
             optimizer.step()
 
+            # show log and save result
             if global_step % 100 == 0:
                 if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
                     logger.info('[epoch][s/s_per_e/gs]: [{}][{}/{}/{}], lr: {:.12f}, loss: {:.12f}'.format(epoch, step, steps_per_epoch, global_step, current_lr, loss.item()))
@@ -458,7 +406,7 @@ def main_worker(gpu, ngpus_per_node, args):
                 time.sleep(0.1)
                 model.eval()
                 with torch.no_grad():
-                    eval_measures = online_eval(model, dataloader_eval, gpu, ngpus_per_node, post_process=True, logger=logger)
+                    eval_measures = online_eval(args, model, dataloader_eval, gpu, ngpus_per_node, post_process=True, logger=logger, ss=ss)
                 if eval_measures is not None:
                     for i in range(9):
                         eval_summary_writer.add_scalar(eval_metrics[i], eval_measures[i].cpu(), int(global_step))
@@ -516,11 +464,10 @@ def main_worker(gpu, ngpus_per_node, args):
 
 
 def main():
-    if args.mode != 'train':
-        print('train.py is only for training.')
-        return -1
+    args = parse_args()
+    os.environ["CUDA_VISIBLE_DEVICES"]=args.devices
 
-    command = 'mkdir ' + os.path.join(args.log_directory, args.model_name)
+    command = 'mkdir -p ' + os.path.join(args.log_directory, args.model_name)
     os.system(command)
 
     args_out_path = os.path.join(args.log_directory, args.model_name)
@@ -531,12 +478,9 @@ def main():
     if save_files:
         aux_out_path = os.path.join(args.log_directory, args.model_name)
         networks_savepath = os.path.join(aux_out_path, 'networks')
-        dataloaders_savepath = os.path.join(aux_out_path, 'dataloaders')
         command = 'cp MambaDepthNAS/train.py ' + aux_out_path
         os.system(command)
         command = 'mkdir -p ' + networks_savepath + ' && cp MambaDepthNAS/networks/*.py ' + networks_savepath
-        os.system(command)
-        command = 'mkdir -p ' + dataloaders_savepath + ' && cp MambaDepthNAS/dataloaders/*.py ' + dataloaders_savepath
         os.system(command)
 
     torch.cuda.empty_cache()
