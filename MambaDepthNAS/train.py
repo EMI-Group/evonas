@@ -6,14 +6,16 @@ import torch.multiprocessing as mp
 
 import random
 import os, sys, time
-from telnetlib import IP
+# os.environ["CUDA_VISIBLE_DEVICES"]="4,5,6,7"  # to set in config file
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, PROJECT_ROOT)
+
 import argparse
 import numpy as np
 from tqdm import tqdm
 from mmengine import Config
 from dataloaders.dataloader import NewDataLoader
 from timm.scheduler.cosine_lr import CosineLRScheduler
-# os.environ["CUDA_VISIBLE_DEVICES"]="4,5,6,7"
 
 from tensorboardX import SummaryWriter
 
@@ -23,12 +25,8 @@ from networks.model import MambaDepth
 from search_space import MambaSearchSpace
 
 '''fine-tune supernet on object dataset, e.g. KITTI, NYU'''
-# (choose SpatialMamba) 
-# export PYTHONPATH=$PYTHONPATH:/data/code_yzh/Spatial-Mamba-main/kernels/dwconv2d
-# export PYTHONPATH=$PYTHONPATH:/data/code_yzh/Spatial-Mamba-main/kernels/selective_scan
 
-
-# python MambaDepthNAS/train.py configs/exp02_kd/01_maxnet_kd01.txt
+# python MambaDepthNAS/train.py configs/fine_tune_kitti_0_maxnet_debug.txt
 
 def parse_args():
     parser = argparse.ArgumentParser(description='MambaDepth PyTorch implementation.', fromfile_prefix_chars='@')
@@ -66,7 +64,8 @@ def parse_args():
     parser.add_argument('--warmup_epochs',             type=int, help='', default=3)
     parser.add_argument('--weight_decay',              type=float, help='', default=0.05)
     parser.add_argument('--kd_ratio',                  type=float,   help='the ratio of knowledge distillation', default=0)
-    parser.add_argument('--dynamic_batch_size',         type=int,   help='the number of dynamic batch size', default=1)
+    parser.add_argument('--dynamic_batch_size',        type=int,   help='the number of dynamic batch size', default=1)
+    parser.add_argument('--f_distill',                 action='store_true',   help='if set, will use mid feature distillation loss')
     parser.add_argument('--resume',                               help='if used with checkpoint_path, will restart training from step zero', action='store_true')
     parser.add_argument('--batch_size',                type=int,   help='this is the global batch size for all gpus', default=4)
     parser.add_argument('--num_epochs',                type=int,   help='number of epochs', default=50)
@@ -106,6 +105,8 @@ def parse_args():
                                                                         'if empty outputs to checkpoint folder', default='')
     # experimental
     parser.add_argument('--dynamic_tanh',              action='store_true', help='if set, will use dynamic tanh for normalization')
+    parser.add_argument('--alpha_1',                   type=float, help='weight coefficient for spatial loss (spat_loss)', default=0.08)
+    parser.add_argument('--alpha_2',                   type=float, help='weight coefficient for frequency loss (freq_loss)', default=0.06)
 
     if sys.argv.__len__() == 2:
         arg_filename_with_prefix = '@' + sys.argv[1]
@@ -193,6 +194,20 @@ def main_worker(gpu, ngpus_per_node, args):
         t_config = Config.fromfile(args.teacher_config)
         teacher_model = build_model(t_config)  # include loading pretrained weight
 
+        if args.f_distill:
+            from distillation.fmdv2 import FreqMaskingDistillLossv2
+            dis_modules_s4 = FreqMaskingDistillLossv2(  # TODO
+                alpha=[args.alpha_1, args.alpha_2],
+                student_dims=512,
+                teacher_dims=1024,
+                query_hw=(14,19),  # shape of tearcher feature 
+                pos_hw=(11,38),  # shape of student feature 
+                pos_dims=1024,  # teacher feature dimension
+                self_query=True,
+                softmax_scale=[5.,5.],
+                num_heads=16
+            )
+
     # print model params    
     if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
         num_params = sum([np.prod(p.size()) for p in model.parameters()])
@@ -210,6 +225,10 @@ def main_worker(gpu, ngpus_per_node, args):
             if args.kd_ratio > 0:
                 teacher_model.cuda(args.gpu)
                 teacher_model = torch.nn.parallel.DistributedDataParallel(teacher_model, device_ids=[args.gpu], broadcast_buffers=False)
+
+                if args.f_distill:  # TODO
+                    dis_modules_s4.cuda(args.gpu)
+                    dis_modules_s4 = torch.nn.parallel.DistributedDataParallel(dis_modules_s4, device_ids=[args.gpu])
         else:
             model.cuda()
             model = torch.nn.parallel.DistributedDataParallel(model, find_unused_parameters=True)
@@ -217,11 +236,7 @@ def main_worker(gpu, ngpus_per_node, args):
                 teacher_model.cuda()
                 teacher_model = torch.nn.parallel.DistributedDataParallel(teacher_model, broadcast_buffers=False)
     else:
-        model = torch.nn.DataParallel(model)
-        model.cuda()
-        if args.kd_ratio > 0:
-            teacher_model = torch.nn.DataParallel(teacher_model)
-            teacher_model.cuda()
+        raise ValueError("Distributed training is not enabled. Please set --distributed flag.")
 
     if args.kd_ratio > 0:
         teacher_model.eval()
@@ -268,9 +283,15 @@ def main_worker(gpu, ngpus_per_node, args):
         backbone_params = list(model.module.backbone.parameters())
         other_params = [p for n, p in model.module.named_parameters() if not n.startswith("backbone.")]
 
-        optimizer = torch.optim.AdamW([{'params': backbone_params, 'lr': args.learning_rate},
-                                    {'params': other_params,    'lr': args.learning_rate}],
-                                        weight_decay=args.weight_decay)  # TODO 可学习VSSD的权重衰减策略
+        param_groups = [
+            {'params': backbone_params, 'lr': args.learning_rate},
+            {'params': other_params,    'lr': args.learning_rate},
+        ]
+        if args.f_distill:
+            param_groups.append(
+                {'params': dis_modules_s4.parameters(), 'lr': args.learning_rate}
+            )
+        optimizer = torch.optim.AdamW(param_groups, weight_decay=args.weight_decay)  # TODO 可学习VSSD的权重衰减策略
     elif args.optimizer == 'adam':
         optimizer = torch.optim.Adam([{'params': model.module.parameters()}],
                                 lr=args.learning_rate)   
@@ -335,7 +356,7 @@ def main_worker(gpu, ngpus_per_node, args):
             if args.kd_ratio > 0:
                 with torch.no_grad():
                     teacher_model.eval()
-                    depth_tea = infer(teacher_model, image, dataset=args.dataset, focal=None)
+                    depth_tea, mid_feats_T = infer(teacher_model, image, dataset=args.dataset, focal=None)
 
             for _ in range(args.dynamic_batch_size):
                 # random sample subnet
@@ -344,14 +365,30 @@ def main_worker(gpu, ngpus_per_node, args):
                 model_module.backbone.set_sample_config(sample_config=sample_config)
                 # print(sample_config)  # {'mlp_ratio': [3.5, 4.0, 1.0, 3.5], 'd_state': [64, 64, 48, -1], 'expand': [0.5, 4, 0.5, -1]}
 
-                depth_est = model(image)
+                depth_est, mid_feats_S = model(image, mid_features=True)
                 loss = silog_criterion.forward(depth_est, depth_gt)
 
                 ### teacher model
+                spat_loss = torch.tensor(0.0).cuda(args.gpu)
+                freq_loss = torch.tensor(0.0).cuda(args.gpu)
+                kd_loss = torch.tensor(0.0).cuda(args.gpu)
+                if args.f_distill: #TODO
+                    feat_T_s4 = mid_feats_T[3]
+                    feat_S_s4 = mid_feats_S[3]
+                    # feat_S_s0.shape (4, 64, 88, 304)
+                    # feat_S_s1.shape (4, 128, 44, 152)
+                    # feat_S_s2.shape (4, 256, 22, 76)
+                    # feat_S_s3.shape (4, 512, 11, 38)
+                    spat_loss, freq_loss = dis_modules_s4(feat_S_s4, feat_T_s4)
+                    # print('spat_loss', spat_loss, 'freq_loss', freq_loss)
+                    # spat_loss tTensor(43.6711, device='cuda:0', grad_fn=<AliasBackward0>) freq_loss tTensor(31.9551, device='cuda:0', grad_fn=<AliasBackward0>)
+                    # assert False,'debug'
+
                 if args.kd_ratio > 0:
                     kd_loss = silog_criterion.forward(depth_est, depth_tea, interpolate=True)
-                    # print('kd_loss', kd_loss)
-                    loss = loss + args.kd_ratio * kd_loss
+                    # print('loss', (1 - args.kd_ratio) * loss, 'kd_loss', args.kd_ratio * kd_loss, 'spat_loss', spat_loss, 'freq_loss', freq_loss)
+                    loss = (1 - args.kd_ratio) * loss + args.kd_ratio * kd_loss + spat_loss + freq_loss
+                
                 
                 loss = loss / args.dynamic_batch_size
                 loss.backward()
@@ -372,7 +409,7 @@ def main_worker(gpu, ngpus_per_node, args):
             # show log and save result
             if global_step % 100 == 0:
                 if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
-                    logger.info('[epoch][s/s_per_e/gs]: [{}][{}/{}/{}], lr: {:.12f}, loss: {:.12f}'.format(epoch, step, steps_per_epoch, global_step, current_lr, loss.item()))
+                    logger.info('[epoch][s/s_per_e/gs]: [{}][{}/{}/{}], lr: {:.10f}, total_loss: {:.6f}, kd_loss: {:.6f}, spat_loss: {:.6f}, freq_loss: {:.6f}'.format(epoch, step, steps_per_epoch, global_step, current_lr, loss.item(), args.kd_ratio * kd_loss.item(), spat_loss.item(), freq_loss.item()))
                     if np.isnan(loss.cpu().item()):
                         logger.info('NaN in loss occurred. Aborting training.')
                         return -1

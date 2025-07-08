@@ -47,6 +47,11 @@ def get_activation(name, bank):
         bank[name] = output
     return hook
 
+def get_before_activation(name, bank):
+    def hook(model, input, output):
+        bank[name] = input[0]
+    return hook
+
 # debug resize
 import torchvision.transforms.functional as TF
 from PIL import Image
@@ -228,7 +233,7 @@ class PrepForMidas(object):
 
 class DepthAnythingCore(nn.Module):
     def __init__(self, midas, trainable=False, fetch_features=True, layer_names=('out_conv', 'l4_rn', 'r4', 'r3', 'r2', 'r1'), freeze_bn=False, keep_aspect_ratio=True,
-                 img_size=384, **kwargs):
+                 img_size=384, FD_layer_names=('lay1', 'lay2', 'lay3', 'lay4'), **kwargs):
         """Midas Base model used for multi-scale feature extraction.
 
         Args:
@@ -244,12 +249,14 @@ class DepthAnythingCore(nn.Module):
         self.core = midas
         self.output_channels = None
         self.core_out = {}
+        self.mid_features = {}
         self.trainable = trainable
         self.fetch_features = fetch_features
         # midas.scratch.output_conv = nn.Identity()
         self.handles = []
         # self.layer_names = ['out_conv','l4_rn', 'r4', 'r3', 'r2', 'r1']
         self.layer_names = layer_names
+        self.FD_layer_names = FD_layer_names
 
         self.set_trainable(trainable)
         self.set_fetch_features(fetch_features)
@@ -302,15 +309,16 @@ class DepthAnythingCore(nn.Module):
                 x = denormalize(x)
             x = self.prep(x)
         
-        with torch.set_grad_enabled(self.trainable):
+        # with torch.set_grad_enabled(self.trainable): # note: this is not needed for tearcher model
 
             rel_depth = self.core(x)
             if not self.fetch_features:
                 return rel_depth
         out = [self.core_out[k] for k in self.layer_names]
+        mid_features = [self.mid_features[k] for k in self.FD_layer_names]
 
         if return_rel_depth:
-            return rel_depth, out
+            return rel_depth, out, mid_features
         return out
 
     def get_rel_pos_params(self):
@@ -353,7 +361,21 @@ class DepthAnythingCore(nn.Module):
         if "l4_rn" in self.layer_names:
             self.handles.append(midas.depth_head.scratch.layer4_rn.register_forward_hook(
                 get_activation("l4_rn", self.core_out)))
-
+            
+        # for Feature Distillation
+        if "lay1" in self.FD_layer_names:
+            self.handles.append(midas.depth_head.scratch.layer1_rn.register_forward_hook(
+                get_before_activation("lay1", self.mid_features)))
+        if "lay2" in self.FD_layer_names:
+            self.handles.append(midas.depth_head.scratch.layer2_rn.register_forward_hook(
+                get_before_activation("lay2", self.mid_features)))
+        if "lay3" in self.FD_layer_names:
+            self.handles.append(midas.depth_head.scratch.layer3_rn.register_forward_hook(
+                get_before_activation("lay3", self.mid_features)))
+        if "lay4" in self.FD_layer_names:
+            self.handles.append(midas.depth_head.scratch.layer4_rn.register_forward_hook(
+                get_before_activation("lay4", self.mid_features)))
+            
         return self
 
     def remove_hooks(self):

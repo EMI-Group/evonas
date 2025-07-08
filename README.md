@@ -14,6 +14,8 @@ Using **Once-for-All Progressive Shrinking**
 
 2025/7/5 update SuperNet Fine-tuning(Training strategy, Open Depth space, Code encode-decode, Teacher model fixed)
 
+2025/7/7 update SuperNet Fine-tuning(Add CAP and DFM of scaleKD)
+
 ------
 
 ##  Search Space
@@ -48,19 +50,21 @@ configs/
 - [x] Loading pretrained weight (encoder, decoder, ema)
 - [x] SuperNet Fine-tuning
     - [x] encoder-decoder lr, warmup lr, optimizer
-    - [ ] ema, Gradient Accumulation, amp
-    - [x] Only sample one layer per stage
-    - [x] One batch train multiple SubNet
-    - [ ] Update SuperNet by Fedavg
-    - [ ] Parallel train SubNet
-    - [ ] Knowledge Distillation (bug)
+    - [ ] ~~ema, Gradient Accumulation, amp~~
+    - [x] ~~Only sample one layer per stage~~
+    - [x] ~~One batch train multiple SubNet~~
+    - [ ] ~~Update SuperNet by Fedavg~~
+    - [ ] ~~Parallel train SubNet~~
+    - [x] Knowledge Distillation (bug fixed)
+    - [x] add new kd strategy (part1 and part2 of scaleKD)
 - [x] NAS Search (pymoo, param_cal)
-    - [ ] add depth choose or only one layer
+    - [x] add depth choose ~~or only one layer~~
+    - [ ] recompute the Params and FLOP of subnet
 - [ ] Retrain
 
 ------
 
-## pipline
+## Pipline
 1. pretrain supernet on ImageNet-1k (only Once);
 2. fine-tune supernet on object datasets(e.g. KITTI);
 3. NAS search by evolution;

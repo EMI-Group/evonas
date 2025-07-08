@@ -6,7 +6,7 @@
 --data_path ../../dataset/KITTI/
 --gt_path ../../dataset/KITTI/data_depth_annotated/
 --filenames_file data_splits/eigen_train_files_with_gt.txt
---batch_size 2
+--batch_size 16
 --num_epochs 50
 --learning_rate 5e-5
 --min_lr 5e-6
@@ -14,17 +14,17 @@
 --warmup_epochs 3
 --weight_decay 0.05
 --max_norm -1
---num_threads 1
+--num_threads 4
 --input_height 352
 --input_width 1216
 --max_depth 80
 --do_kb_crop
 --do_random_rotate
 --degree 1.0
---log_directory ./runs/debug/
+--log_directory ./runs/exp02_kd/05_kd01_fd/
 --multiprocessing_distributed
---dist_url tcp://127.0.0.1:2359
---devices 0
+--dist_url tcp://127.0.0.1:2351
+--devices 0,1,2,3
 
 --log_freq 1000
 --do_online_eval
@@ -40,8 +40,5 @@
 --kd_ratio 0.1
 --mlp_ratio "[4.0]"
 --d_state "[64]"
---ssd_expand "[2]"
-
+--ssd_expand "[4]"
 --f_distill
---alpha_1 0.004
---alpha_2 0.003

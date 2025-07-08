@@ -185,7 +185,7 @@ class MambaDepth(nn.Module):
         self.max_depth = max_depth
         
 
-    def forward(self, imgs):
+    def forward(self, imgs, mid_features=False):
         feats = self.backbone(imgs)
 
         ppm_out = self.PPM(feats[3])
@@ -209,7 +209,9 @@ class MambaDepth(nn.Module):
         d1 = self.disp_head1(e0, 4)
 
         depth = d1 * self.max_depth
-
+        
+        if mid_features:
+            return depth, feats
         return depth
 
 
