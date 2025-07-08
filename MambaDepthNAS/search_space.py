@@ -1,7 +1,7 @@
 import numpy as np
 
 class MambaSearchSpace:
-    def __init__(self, mlp_ratio, d_state, ssd_expand, depth=[2, 4, 8, 4], num_stages=4, open_depth=True):
+    def __init__(self, mlp_ratio, d_state, ssd_expand, depth=[8, 8, 8, 8], num_stages=4, open_depth=True):
         self.num_stages = num_stages
         self.mlp_ratio = mlp_ratio
         self.d_state = d_state
@@ -20,10 +20,13 @@ class MambaSearchSpace:
             expand = np.random.choice(self.ssd_expand, size=self.num_stages - 1, replace=True).tolist()
             # Last stage is not SSD (is Self-Attention), so d_state and expand is not used!
 
-            if self.open_depth:
-                depth = [int(np.random.choice(range(1, d+1), replace=True)) for d in self.depth]
-            else:
-                depth = self.depth  # 固定深度
+            depth = []
+            for d in self.depth:
+                sampled = np.random.randint(1, (1 << d)) if self.open_depth else (1 << d) - 1 # is fixed depth
+                # print(sampled)
+                bits = [int(b) for b in bin(sampled)[2:].zfill(d)]  # int -> bit
+                depth.append(bits)
+            # e.g. 'depth': [[0, 1], [0, 0, 1, 0], [0, 0, 1, 1, 1, 1, 0, 0], [0, 1, 0, 1]]
 
             samples.append({'mlp_ratio': mlp_ratio, 'd_state': d_state, 'expand': expand, 'depth': depth})
         return samples
@@ -37,11 +40,11 @@ class MambaSearchSpace:
             - 'mlp_ratio': list of float, e.g. [3.5, 4.0, 1.0, 3.5]
             - 'd_state': list of int, e.g. [64, 64, 48]
             - 'expand': list of float, e.g. [0.5, 4, 0.5]
-            - 'depth': list of int, e.g. [2, 3, 4, 2]
+            - 'depth': list of list, e.g. [[1, 1], [0, 0, 0, 1], [1, 0, 0, 0, 1, 1, 0, 1], [0, 1, 1, 1]]
 
         Returns:
             list[int]: A flattened integer encoding, e.g.
-                [4,5,1,5, 3,3,2, 0,4,0, 1,2,3,1]
+                [4,5,1,5, 3,3,2, 0,4,0, 2,0,140,6]
         """
 
         code = []
@@ -49,9 +52,9 @@ class MambaSearchSpace:
         mlp_ratio = [np.argwhere(_x == np.array(self.mlp_ratio))[0, 0] for _x in config['mlp_ratio']]
         d_state = [np.argwhere(_x == np.array(self.d_state))[0, 0] for _x in config['d_state']]
         expand = [np.argwhere(_x == np.array(self.ssd_expand))[0, 0] for _x in config['expand']]
-        depth = [_x-1 for _x in config['depth']]
+        compressed_depth = [int(''.join(map(str, bits)), 2)-1 for bits in config['depth']]
 
-        code = mlp_ratio + d_state + expand + depth
+        code = mlp_ratio + d_state + expand + compressed_depth
         code = [int(x) for x in code]
         return code
     
@@ -61,14 +64,14 @@ class MambaSearchSpace:
 
         Args:
             code (list[int]): A flattened integer encoding, e.g.
-                [4,5,1,5, 3,3,2, 0,4,0, 1,3,6,2]
+                [4,5,1,5, 3,3,2, 0,4,0, 2,0,140,6]
 
         Returns:
             dict: A decoded architecture configuration with keys:
                 - 'mlp_ratio': list of float
                 - 'd_state': list of int
                 - 'expand': list of float
-                - 'depth': list of int
+                - 'depth': list of list
         """
         num_stages = self.num_stages
         mlp_ratio = code[:num_stages]
@@ -80,7 +83,8 @@ class MambaSearchSpace:
             'mlp_ratio': [self.mlp_ratio[i] for i in mlp_ratio],
             'd_state': [self.d_state[i] for i in d_state],
             'expand': [self.ssd_expand[i] for i in expand],
-            'depth': [i+1 for i in depth]
+            'depth': [[int(b) for b in bin(d+1)[2:].zfill(sd)]
+                        for d,sd in zip(depth,self.depth)]
         }
 
 
@@ -101,9 +105,12 @@ def main():
     dec_config = ss.decode(enc_code)
     print("Decoded architecture configuration:", dec_config)
 
-    # Sampled architecture configuration: {'mlp_ratio': [3.0, 2.0, 4.0, 0.5], 'd_state': [32, 64, 32], 'expand': [4.0, 2.0, 0.5], 'depth': [1, 3, 5, 4]}
-    # Encoded chromosome: [3, 2, 5, 0, 1, 3, 1, 4, 2, 0, 0, 2, 4, 3]
-    # Decoded architecture configuration: {'mlp_ratio': [3.0, 2.0, 4.0, 0.5], 'd_state': [32, 64, 32], 'expand': [4.0, 2.0, 0.5], 'depth': [1, 3, 5, 4]}
+    '''
+    e.g.
+    Sampled architecture configuration: {'mlp_ratio': [4.0, 1.0, 4.0, 2.0], 'd_state': [32, 64, 32], 'expand': [4.0, 3.0, 4.0], 'depth': [[1, 1], [0, 0, 0, 1], [1, 0, 0, 0, 1, 1, 0, 1], [0, 1, 1, 1]]}
+    Encoded chromosome: [5, 1, 5, 2, 1, 3, 1, 4, 3, 4, 2, 0, 140, 6]
+    Decoded architecture configuration: {'mlp_ratio': [4.0, 1.0, 4.0, 2.0], 'd_state': [32, 64, 32], 'expand': [4.0, 3.0, 4.0], 'depth': [[1, 1], [0, 0, 0, 1], [1, 0, 0, 0, 1, 1, 0, 1], [0, 1, 1, 1]]}
+    '''
 
 if __name__ == "__main__":
     main()

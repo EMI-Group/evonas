@@ -26,8 +26,6 @@ class MambaDepth(nn.Module):
         self.version = version
         self.with_neck = False
         # print('max_depth',max_depth)
-        norm_cfg = dict(type='BN', requires_grad=True)
-        # norm_cfg = dict(type='GN', requires_grad=True, num_groups=8)
 
         ### encoder
         if version == 'SuperNet':
@@ -37,7 +35,7 @@ class MambaDepth(nn.Module):
                 patch_size=4,  # 无实际意义
                 in_chans=3,
                 embed_dim=64,
-                depths=[2, 4, 8, 4],
+                depths=[8, 8, 8, 8],
                 num_heads=[2, 4, 8, 16],
                 mlp_ratio=4.0,
                 drop_rate=0.0,

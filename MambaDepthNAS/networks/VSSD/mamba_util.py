@@ -14,6 +14,7 @@ import torch.utils.checkpoint as checkpoint
 from timm.models.layers import DropPath, to_2tuple, trunc_normal_
 # yzh
 from .module.Linear_super import LinearSuper
+import re
 
 class Mlp(nn.Module):
     def __init__(self, in_features, hidden_features=None, out_features=None, act_layer=nn.GELU, drop=0.):
@@ -223,3 +224,43 @@ class SimplePatchMerging(nn.Module):
         x = self.conv(x.reshape(B, H, W, C).permute(0, 3, 1, 2)).flatten(2).permute(0, 2, 1)
         x = self.norm(x)
         return x
+
+
+def expand_depth(ori_state_dict, new_state_dict):
+    """
+    Expand the depth of the state_dict by duplicating the last layer.
+    
+    Args:
+        ori_state_dict (dict): The original state_dict with keys like 'layers.0.blocks.1.mlp.fc1.weight'.
+        new_state_dict (dict): The new model's state_dict.
+    
+    Returns:
+        dict: The modified state_dict with expanded depth.
+    """
+    missing_keys = []
+
+    for key in new_state_dict.keys():
+        if key in ori_state_dict and ori_state_dict[key].shape == new_state_dict[key].shape:
+            new_state_dict[key] = ori_state_dict[key].clone()
+        else:
+            match = re.match(r'(layers\.\d+\.blocks\.)(\d+)(\..+)', key)
+            if match:
+                stage, layer, suffix = match.groups()
+                layer_index = int(layer)
+
+                while layer_index >= 0:
+                    src_key = f"{stage}{layer_index}{suffix}"
+                    if src_key in ori_state_dict and ori_state_dict[src_key].shape == new_state_dict[key].shape:
+                        new_state_dict[key] = ori_state_dict[src_key].clone()
+                        # print(f"Fallback copy: {src_key} -> {key}")
+                        break
+                    layer_index -= 1
+                else:
+                    missing_keys.append(key)
+            else:
+                missing_keys.append(key)
+                
+    print('missing_keys=', missing_keys)
+    # 'outnorm0.weight', 'outnorm0.bias', 'outnorm1.weight', 'outnorm1.bias', 'outnorm2.weight', 'outnorm2.bias', 'outnorm3.weight', 'outnorm3.bias' is for classification task
+
+    return new_state_dict

@@ -16,6 +16,8 @@ Using **Once-for-All Progressive Shrinking**
 
 2025/7/7 update SuperNet Fine-tuning(Add CAP and DFM of scaleKD)
 
+2025/7/8 update SuperNet Fine-tuning(Change supernet depth to [8,8,8,8], pretrained weights and sample code)
+
 ------
 
 ##  Search Space
@@ -57,6 +59,7 @@ configs/
     - [ ] ~~Parallel train SubNet~~
     - [x] Knowledge Distillation (bug fixed)
     - [x] add new kd strategy (part1 and part2 of scaleKD)
+    - [x] Change supernet depth to [8,8,8,8] and pretrained weights
 - [x] NAS Search (pymoo, param_cal)
     - [x] add depth choose ~~or only one layer~~
     - [ ] recompute the Params and FLOP of subnet

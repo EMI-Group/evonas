@@ -26,7 +26,11 @@ from search_space import MambaSearchSpace
 
 '''fine-tune supernet on object dataset, e.g. KITTI, NYU'''
 
+### develop
 # python MambaDepthNAS/train.py configs/fine_tune_kitti_0_maxnet_debug.txt
+
+### final
+# 
 
 def parse_args():
     parser = argparse.ArgumentParser(description='MambaDepth PyTorch implementation.', fromfile_prefix_chars='@')
@@ -52,9 +56,14 @@ def parse_args():
     parser.add_argument('--ssd_expand',                type=str2list, default=[2])
     parser.add_argument('--open_depth',                action='store_true', help='if set, will open depth sampling, otherwise use fixed depth for all stages')
 
+    # Knowledge distillation
+    parser.add_argument('--kd_ratio',                  type=float,   help='the ratio of knowledge distillation', default=0)
+    parser.add_argument('--f_distill',                 action='store_true',   help='if set, will use mid feature distillation loss')
+    parser.add_argument('--alpha_1',                   type=float, help='weight coefficient for spatial loss (spat_loss)', default=0.08)
+    parser.add_argument('--alpha_2',                   type=float, help='weight coefficient for frequency loss (freq_loss)', default=0.06)
+
     # Log and save
     parser.add_argument('--log_directory',             type=str,   help='directory to save checkpoints and summaries', default='')
-    # parser.add_argument('--checkpoint_path',           type=str,   help='path to a checkpoint to load', default='')
     parser.add_argument('--log_freq',                  type=int,   help='Logging frequency in global steps', default=100)
     parser.add_argument('--save_freq',                 type=int,   help='Checkpoint saving frequency in global steps', default=5000)
 
@@ -63,15 +72,13 @@ def parse_args():
     parser.add_argument('--warmup_lr',                 type=float, help='', default=5e-7)
     parser.add_argument('--warmup_epochs',             type=int, help='', default=3)
     parser.add_argument('--weight_decay',              type=float, help='', default=0.05)
-    parser.add_argument('--kd_ratio',                  type=float,   help='the ratio of knowledge distillation', default=0)
     parser.add_argument('--dynamic_batch_size',        type=int,   help='the number of dynamic batch size', default=1)
-    parser.add_argument('--f_distill',                 action='store_true',   help='if set, will use mid feature distillation loss')
     parser.add_argument('--resume',                               help='if used with checkpoint_path, will restart training from step zero', action='store_true')
     parser.add_argument('--batch_size',                type=int,   help='this is the global batch size for all gpus', default=4)
     parser.add_argument('--num_epochs',                type=int,   help='number of epochs', default=50)
     parser.add_argument('--learning_rate',             type=float, help='initial learning rate', default=1e-4)
     parser.add_argument('--variance_focus',            type=float, help='lambda in paper: [0, 1], higher value more focus on minimizing variance of error', default=0.85)
-    parser.add_argument('--max_norm',                  type=float, help='maximum norm for gradient clipping, (grad clip is not used if -1 or 0)', default=5.0)
+    parser.add_argument('--max_norm',                  type=float, help='maximum norm for gradient clipping, (grad clip is not used if -1 or 0)', default=-1)
     parser.add_argument('--optimizer',                 type=str,   help='optimizer to use, adam or adamw', default='adamw')
 
     # Preprocessing
@@ -105,8 +112,7 @@ def parse_args():
                                                                         'if empty outputs to checkpoint folder', default='')
     # experimental
     parser.add_argument('--dynamic_tanh',              action='store_true', help='if set, will use dynamic tanh for normalization')
-    parser.add_argument('--alpha_1',                   type=float, help='weight coefficient for spatial loss (spat_loss)', default=0.08)
-    parser.add_argument('--alpha_2',                   type=float, help='weight coefficient for frequency loss (freq_loss)', default=0.06)
+    
 
     if sys.argv.__len__() == 2:
         arg_filename_with_prefix = '@' + sys.argv[1]
@@ -181,10 +187,10 @@ def main_worker(gpu, ngpus_per_node, args):
     # MambaDepth model
     model = MambaDepth(args, version=args.encoder, inv_depth=False, max_depth=args.max_depth, pretrained=args.pretrain)
     if args.dynamic_tanh:  ### 替换归一化层（会破坏预训练权重，暂不使用）
+        assert False, 'Dynamic tanh is not good for this yet!'
         from networks.dynamic_tanh import convert_ln_to_dyt
         model = convert_ln_to_dyt(model)
         logger.info("==> Using dynamic_tanh!")
-        assert False, 'Dynamic tanh is not good for this yet!'
 
     model.train()
 
@@ -196,7 +202,7 @@ def main_worker(gpu, ngpus_per_node, args):
 
         if args.f_distill:
             from distillation.fmdv2 import FreqMaskingDistillLossv2
-            dis_modules_s4 = FreqMaskingDistillLossv2(  # TODO
+            dis_modules_s4 = FreqMaskingDistillLossv2(
                 alpha=[args.alpha_1, args.alpha_2],
                 student_dims=512,
                 teacher_dims=1024,
@@ -226,7 +232,7 @@ def main_worker(gpu, ngpus_per_node, args):
                 teacher_model.cuda(args.gpu)
                 teacher_model = torch.nn.parallel.DistributedDataParallel(teacher_model, device_ids=[args.gpu], broadcast_buffers=False)
 
-                if args.f_distill:  # TODO
+                if args.f_distill: 
                     dis_modules_s4.cuda(args.gpu)
                     dis_modules_s4 = torch.nn.parallel.DistributedDataParallel(dis_modules_s4, device_ids=[args.gpu])
         else:
@@ -403,7 +409,7 @@ def main_worker(gpu, ngpus_per_node, args):
 
             if args.max_norm > 0:
                 grad_norm = nn.utils.clip_grad_norm_(model.parameters(), args.max_norm)  # TODO max_norm need to set
-            # print(f'grad norm: {grad_norm:.2f}')
+                # print(f'grad norm: {grad_norm:.2f}')
             optimizer.step()
 
             # show log and save result

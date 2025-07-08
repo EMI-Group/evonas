@@ -12,9 +12,9 @@ from einops import rearrange, repeat
 import math
 import copy
 try:
-    from mamba_util import PatchMerging,SimplePatchMerging, Stem, SimpleStem, Mlp, MlpSuper
+    from mamba_util import PatchMerging,SimplePatchMerging, Stem, SimpleStem, Mlp, MlpSuper, expand_depth
 except:
-    from .mamba_util import PatchMerging, SimplePatchMerging, Stem, SimpleStem, Mlp, MlpSuper
+    from .mamba_util import PatchMerging, SimplePatchMerging, Stem, SimpleStem, Mlp, MlpSuper, expand_depth
 from fvcore.nn import FlopCountAnalysis, flop_count_str, flop_count, parameter_count
 
 # yzh
@@ -449,7 +449,7 @@ class BasicLayer(nn.Module):
         self.input_resolution = input_resolution
         self.depth = depth
         self.use_checkpoint = use_checkpoint
-        self.sample_layer_num = self.depth
+        self.sample_layer_num = [1]*self.depth
 
         # build blocks
         self.blocks = nn.ModuleList([
@@ -469,7 +469,8 @@ class BasicLayer(nn.Module):
     def set_sample_config(self, sample_mlp_ratio, sample_d_state=None, sample_expand=None, sample_layer_num=None):
         for blk in self.blocks:
             blk.set_sample_config(sample_mlp_ratio, sample_d_state, sample_expand)
-        self.sample_layer_num = sample_layer_num if sample_layer_num is not None else self.depth
+        if sample_layer_num is not None:
+            self.sample_layer_num = sample_layer_num 
 
     def forward(self, x, H=None, W=None):
         '''note: if use Backbone_VMAMBA2, this forward function will be not used'''
@@ -655,8 +656,11 @@ class Backbone_VMAMBA2(VMAMBA2):
         try:
             _ckpt = torch.load(open(ckpt, "rb"), map_location=torch.device("cpu"))
             print(f"Successfully load ckpt {ckpt} from {key}")
-            incompatibleKeys = self.load_state_dict(_ckpt[key], strict=False)
+            new_state_dict = expand_depth(_ckpt[key], self.state_dict())  # Expand depth of the pretrained weight
+            incompatibleKeys = self.load_state_dict(new_state_dict, strict=False)
             print(incompatibleKeys)
+            del _ckpt
+            del new_state_dict
         except Exception as e:
             print(f"Failed loading checkpoint form {ckpt}: {e}")
 
@@ -665,7 +669,7 @@ class Backbone_VMAMBA2(VMAMBA2):
 
         def layer_forward(l, x, H=None, W=None):
             for id, blk in enumerate(l.blocks):
-                if id >= l.sample_layer_num:
+                if l.sample_layer_num[id] == 0:
                     # print(f"Skip layer {id} in BasicLayer") # for debug
                     continue
                 x = blk(x, H, W)
