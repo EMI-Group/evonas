@@ -36,7 +36,7 @@
 --max_depth_eval 80
 --garg_crop
 
---dynamic_batch_size 1
+--dynamic_batch_size 4
 --kd_ratio 0.1
 --f_distill
 --alpha_1 0.08

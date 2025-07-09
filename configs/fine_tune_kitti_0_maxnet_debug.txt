@@ -6,7 +6,7 @@
 --data_path ../../dataset/KITTI/
 --gt_path ../../dataset/KITTI/data_depth_annotated/
 --filenames_file data_splits/eigen_train_files_with_gt.txt
---batch_size 1
+--batch_size 4
 --num_epochs 50
 --learning_rate 5e-5
 --min_lr 5e-6
@@ -24,7 +24,7 @@
 --log_directory ./runs/debug/
 --multiprocessing_distributed
 --dist_url tcp://127.0.0.1:2359
---devices 0
+--devices 0,1
 
 --log_freq 1000
 --do_online_eval
@@ -38,9 +38,10 @@
 
 --dynamic_batch_size 1
 --kd_ratio 0
---mlp_ratio "[2.0]"
---d_state "[32]"
---ssd_expand "[2]"
+--mlp_ratio "[2.0,4.0]"
+--d_state "[32,64]"
+--ssd_expand "[2,4]"
+--open_depth
 
 --alpha_1 0.004
 --alpha_2 0.003

@@ -18,6 +18,8 @@ Using **Once-for-All Progressive Shrinking**
 
 2025/7/8 update SuperNet Fine-tuning(Change supernet depth to [8,8,8,8], pretrained weights and sample code)
 
+2025/7/9 update SuperNet Fine-tuning(final)(depth 01bit code, script of whole run)
+
 ------
 
 ##  Search Space
@@ -33,14 +35,28 @@ SSD_EXPAND:  [0.5, 1, 2, 3, 4]
 ##  Train Piplines
 
 ```
-configs/
-├── supernet_train_kitti_0_maxnet.txt      # Step 0: max network
-├── supernet_train_kitti_1_mlp_1.txt       # Step 1: relax MLP_RATIO=[3.0, 3.5, 4.0]
-├── supernet_train_kitti_2_mlp_2.txt       # Step 1: relax MLP_RATIO=[0.5, 1.0, 2.0, 3.0, 3.5, 4.0]
-├── supernet_train_kitti_3_state_1.txt     # Step 2: relax D_STATE=[48, 64]
-├── supernet_train_kitti_4_state_2.txt     # Step 3: relax D_STATE=[16, 32, 48, 64]
-├── supernet_train_kitti_5_ssdExpand_1.txt # Step 4: relax SSD_EXPAND=[2, 3, 4]
-├── supernet_train_kitti_6_ssdExpand_2.txt # Step 5: relax SSD_EXPAND=[0.5, 1, 2, 3, 4]
+configs/prog_shrink
+├── supernet_train_kitti_0_maxnet.txt   # Step 0: max network
+├── supernet_train_kitti_1_state_1.txt  # Step 1: relax D_STATE=[48, 64]
+├── supernet_train_kitti_2_state_2.txt  # Step 2: relax D_STATE=[16, 32, 48, 64]
+├── supernet_train_kitti_3_mlp_1.txt    # Step 3: relax MLP_RATIO=[3.0, 3.5, 4.0]
+├── supernet_train_kitti_4_mlp_2.txt    # Step 4: relax MLP_RATIO=[0.5, 1.0, 2.0, 3.0, 3.5, 4.0]
+├── supernet_train_kitti_5_ssd_1.txt    # Step 5: relax SSD_EXPAND=[2, 3, 4]
+├── supernet_train_kitti_6_ssd_2.txt    # Step 6: relax SSD_EXPAND=[0.5, 1, 2, 3, 4]
+├── supernet_train_kitti_7_depth.txt    # Step 7: relax free Depth
+```
+
+```
+python MambaDepthNAS/train.py configs/prog_shrink/supernet_train_kitti_0_maxnet.txt
+python MambaDepthNAS/train.py configs/prog_shrink/supernet_train_kitti_1_state_1.txt
+python MambaDepthNAS/train.py configs/prog_shrink/supernet_train_kitti_2_state_2.txt
+……
+```
+
+or
+
+```
+sh whole_run.sh
 ```
 
 ------

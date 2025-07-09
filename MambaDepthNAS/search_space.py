@@ -1,12 +1,13 @@
 import numpy as np
 
 class MambaSearchSpace:
-    def __init__(self, mlp_ratio, d_state, ssd_expand, depth=[8, 8, 8, 8], num_stages=4, open_depth=True):
+    def __init__(self, mlp_ratio, d_state, ssd_expand, depth=[8, 8, 8, 8], num_stages=4, min_ones=1, open_depth=True):
         self.num_stages = num_stages
         self.mlp_ratio = mlp_ratio
         self.d_state = d_state
         self.ssd_expand = ssd_expand
         self.depth = depth
+        self.min_ones = min_ones # minist number of layers per stage
         self.open_depth = open_depth  # 是否搜索深度
 
     def sample(self, n_samples=1):
@@ -22,9 +23,12 @@ class MambaSearchSpace:
 
             depth = []
             for d in self.depth:
-                sampled = np.random.randint(1, (1 << d)) if self.open_depth else (1 << d) - 1 # is fixed depth
-                # print(sampled)
-                bits = [int(b) for b in bin(sampled)[2:].zfill(d)]  # int -> bit
+                if self.open_depth:
+                    bits = [np.random.randint(0, 2) for _ in range(d)]
+                    while sum(bits) < self.min_ones:
+                        bits[np.random.randint(0, d)] = 1
+                else:
+                    bits = [1]*d
                 depth.append(bits)
             # e.g. 'depth': [[0, 1], [0, 0, 1, 0], [0, 0, 1, 1, 1, 1, 0, 0], [0, 1, 0, 1]]
 
@@ -44,7 +48,7 @@ class MambaSearchSpace:
 
         Returns:
             list[int]: A flattened integer encoding, e.g.
-                [4,5,1,5, 3,3,2, 0,4,0, 2,0,140,6]
+                [4,5,1,5, 3,3,2, 0,4,0, 1, 1, 0, 0, 0, 1, 1, 0, 0, 0, 1, 1, 0, 1, 0, 1, 1, 1]
         """
 
         code = []
@@ -52,9 +56,9 @@ class MambaSearchSpace:
         mlp_ratio = [np.argwhere(_x == np.array(self.mlp_ratio))[0, 0] for _x in config['mlp_ratio']]
         d_state = [np.argwhere(_x == np.array(self.d_state))[0, 0] for _x in config['d_state']]
         expand = [np.argwhere(_x == np.array(self.ssd_expand))[0, 0] for _x in config['expand']]
-        compressed_depth = [int(''.join(map(str, bits)), 2)-1 for bits in config['depth']]
+        depth = [d for sub in config['depth'] for d in sub]  # flatten
 
-        code = mlp_ratio + d_state + expand + compressed_depth
+        code = mlp_ratio + d_state + expand + depth
         code = [int(x) for x in code]
         return code
     
@@ -64,7 +68,7 @@ class MambaSearchSpace:
 
         Args:
             code (list[int]): A flattened integer encoding, e.g.
-                [4,5,1,5, 3,3,2, 0,4,0, 2,0,140,6]
+                [4,5,1,5, 3,3,2, 0,4,0,  1, 1, 0, 0, 0, 1, 1, 0, 0, 0, 1, 1, 0, 1, 0, 1, 1, 1]
 
         Returns:
             dict: A decoded architecture configuration with keys:
@@ -83,8 +87,8 @@ class MambaSearchSpace:
             'mlp_ratio': [self.mlp_ratio[i] for i in mlp_ratio],
             'd_state': [self.d_state[i] for i in d_state],
             'expand': [self.ssd_expand[i] for i in expand],
-            'depth': [[int(b) for b in bin(d+1)[2:].zfill(sd)]
-                        for d,sd in zip(depth,self.depth)]
+            'depth': [depth[i:i+d] for i,d in zip(
+                [sum(self.depth[:j]) for j in range(len(self.depth))], self.depth)]
         }
 
 

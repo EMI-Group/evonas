@@ -7,7 +7,7 @@
 --gt_path ../../dataset/KITTI/data_depth_annotated/
 --filenames_file data_splits/eigen_train_files_with_gt.txt
 --batch_size 16
---num_epochs 50
+--num_epochs 40
 --learning_rate 5e-5
 --min_lr 5e-6
 --warmup_lr 5e-7

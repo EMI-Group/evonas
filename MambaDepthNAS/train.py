@@ -30,7 +30,16 @@ from search_space import MambaSearchSpace
 # python MambaDepthNAS/train.py configs/fine_tune_kitti_0_maxnet_debug.txt
 
 ### final
-# 
+# sh whole_run.sh
+# or
+# python MambaDepthNAS/train.py configs/prog_shrink/supernet_train_kitti_0_maxnet.txt
+# python MambaDepthNAS/train.py configs/prog_shrink/supernet_train_kitti_1_state_1.txt
+# python MambaDepthNAS/train.py configs/prog_shrink/supernet_train_kitti_2_state_2.txt
+# python MambaDepthNAS/train.py configs/prog_shrink/supernet_train_kitti_3_mlp_1.txt
+# python MambaDepthNAS/train.py configs/prog_shrink/supernet_train_kitti_4_mlp_2.txt
+# python MambaDepthNAS/train.py configs/prog_shrink/supernet_train_kitti_5_ssd_1.txt
+# python MambaDepthNAS/train.py configs/prog_shrink/supernet_train_kitti_6_ssd_2.txt
+# python MambaDepthNAS/train.py configs/prog_shrink/supernet_train_kitti_7_depth.txt
 
 def parse_args():
     parser = argparse.ArgumentParser(description='MambaDepth PyTorch implementation.', fromfile_prefix_chars='@')
@@ -55,6 +64,7 @@ def parse_args():
     parser.add_argument('--d_state',                   type=str2list, default=[64])
     parser.add_argument('--ssd_expand',                type=str2list, default=[2])
     parser.add_argument('--open_depth',                action='store_true', help='if set, will open depth sampling, otherwise use fixed depth for all stages')
+    parser.add_argument('--min_ones',                  type=int,    help='minimum number of active layers in each stage during sampling', default=1)
 
     # Knowledge distillation
     parser.add_argument('--kd_ratio',                  type=float,   help='the ratio of knowledge distillation', default=0)
@@ -167,12 +177,7 @@ def online_eval(args, model, dataloader_eval, gpu, ngpus, post_process=False, lo
 
 
 def main_worker(gpu, ngpus_per_node, args):
-    # logger
-    logger = get_root_logger(args.log_directory)
     args.gpu = gpu
-
-    if args.gpu is not None:
-        logger.info("== Use GPU: {} for training".format(args.gpu))
 
     if args.distributed:
         if args.dist_url == "env://" and args.rank == -1:
@@ -180,6 +185,12 @@ def main_worker(gpu, ngpus_per_node, args):
         if args.multiprocessing_distributed:
             args.rank = args.rank * ngpus_per_node + gpu
         dist.init_process_group(backend=args.dist_backend, init_method=args.dist_url, world_size=args.world_size, rank=args.rank)
+
+    # get logger after init DDP
+    logger = get_root_logger(args.log_directory)
+    
+    if args.gpu is not None:
+        logger.info("== Use GPU: {} for training".format(args.gpu))
 
     if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
         logger.info('args: '+str(args))
@@ -331,7 +342,8 @@ def main_worker(gpu, ngpus_per_node, args):
     var_cnt = len(var_sum)
     var_sum = np.sum(var_sum)
 
-    logger.info("== Initial variables' sum: {:.3f}, avg: {:.3f}".format(var_sum, var_sum/var_cnt))
+    if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
+        logger.info("== Initial variables' sum: {:.3f}, avg: {:.3f}".format(var_sum, var_sum/var_cnt))
 
     steps_per_epoch = len(dataloader.data)
     num_total_steps = args.num_epochs * steps_per_epoch
@@ -369,7 +381,7 @@ def main_worker(gpu, ngpus_per_node, args):
                 sample_config = ss.sample(n_samples=1)[0]
                 model_module = unwrap_model(model)
                 model_module.backbone.set_sample_config(sample_config=sample_config)
-                # print(sample_config)  # {'mlp_ratio': [3.5, 4.0, 1.0, 3.5], 'd_state': [64, 64, 48, -1], 'expand': [0.5, 4, 0.5, -1]}
+                # print(sample_config)  # {'mlp_ratio': [2.0, 4.0, 4.0, 4.0], 'd_state': [32, 32, 64], 'expand': [2, 4, 2], 'depth': [[0, 0, 1, 0, 1, 0, 1, 1], [1, 1, 1, 0, 0, 1, 1, 1], [0, 1, 0, 1, 0, 1, 0, 0], [1, 1, 1, 1, 0, 0, 0, 0]]}
 
                 depth_est, mid_feats_S = model(image, mid_features=True)
                 loss = silog_criterion.forward(depth_est, depth_gt)
@@ -378,7 +390,7 @@ def main_worker(gpu, ngpus_per_node, args):
                 spat_loss = torch.tensor(0.0).cuda(args.gpu)
                 freq_loss = torch.tensor(0.0).cuda(args.gpu)
                 kd_loss = torch.tensor(0.0).cuda(args.gpu)
-                if args.f_distill: #TODO
+                if args.f_distill:
                     feat_T_s4 = mid_feats_T[3]
                     feat_S_s4 = mid_feats_S[3]
                     # feat_S_s0.shape (4, 64, 88, 304)
@@ -523,8 +535,8 @@ def main():
         networks_savepath = os.path.join(aux_out_path, 'networks')
         command = 'cp MambaDepthNAS/train.py ' + aux_out_path
         os.system(command)
-        command = 'mkdir -p ' + networks_savepath + ' && cp MambaDepthNAS/networks/*.py ' + networks_savepath
-        os.system(command)
+        # command = 'mkdir -p ' + networks_savepath + ' && cp MambaDepthNAS/networks/*.py ' + networks_savepath
+        # os.system(command)
 
     torch.cuda.empty_cache()
     args.distributed = args.world_size > 1 or args.multiprocessing_distributed
