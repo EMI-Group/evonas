@@ -46,6 +46,8 @@ configs/prog_shrink
 ├── supernet_train_kitti_7_depth.txt    # Step 7: relax free Depth
 ```
 
+start run
+
 ```
 python MambaDepthNAS/train.py configs/prog_shrink/supernet_train_kitti_0_maxnet.txt
 python MambaDepthNAS/train.py configs/prog_shrink/supernet_train_kitti_1_state_1.txt
@@ -78,7 +80,9 @@ sh whole_run.sh
     - [x] Change supernet depth to [8,8,8,8] and pretrained weights
 - [x] NAS Search (pymoo, param_cal)
     - [x] add depth choose ~~or only one layer~~
-    - [ ] recompute the Params and FLOP of subnet
+    - [ ] ~~recompute the Params and FLOP of subnet~~
+    - [ ] optimization objective Latency and MAC
+    - [ ] crossover and mutation separate mixed code
 - [ ] Retrain
 
 ------
