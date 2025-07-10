@@ -1,7 +1,7 @@
 import numpy as np
 
 class MambaSearchSpace:
-    def __init__(self, mlp_ratio, d_state, ssd_expand, depth=[8, 8, 8, 8], num_stages=4, min_ones=1, open_depth=True):
+    def __init__(self, mlp_ratio, d_state, ssd_expand, depth=[2, 4, 8, 4], num_stages=4, min_ones=1, open_depth=True):
         self.num_stages = num_stages
         self.mlp_ratio = mlp_ratio
         self.d_state = d_state

@@ -35,7 +35,7 @@ class MambaDepth(nn.Module):
                 patch_size=4,  # 无实际意义
                 in_chans=3,
                 embed_dim=64,
-                depths=[8, 8, 8, 8],
+                depths=[2, 4, 8, 4],
                 num_heads=[2, 4, 8, 16],
                 mlp_ratio=4.0,
                 drop_rate=0.0,

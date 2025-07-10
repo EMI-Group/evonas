@@ -76,6 +76,7 @@ def parse_args():
     parser.add_argument('--log_directory',             type=str,   help='directory to save checkpoints and summaries', default='')
     parser.add_argument('--log_freq',                  type=int,   help='Logging frequency in global steps', default=100)
     parser.add_argument('--save_freq',                 type=int,   help='Checkpoint saving frequency in global steps', default=5000)
+    parser.add_argument('--ckpt_path',                 type=str,   help='path to load checkpoints',default=None)
 
     # Training
     parser.add_argument('--min_lr',                    type=float, help='', default=5e-6)
@@ -218,7 +219,7 @@ def main_worker(gpu, ngpus_per_node, args):
                 student_dims=512,
                 teacher_dims=1024,
                 query_hw=(14,19),  # shape of tearcher feature 
-                pos_hw=(11,38),  # shape of student feature 
+                pos_hw=(int(args.input_height/32), int(args.input_width/32)),  # shape of student feature 
                 pos_dims=1024,  # teacher feature dimension
                 self_query=True,
                 softmax_scale=[5.,5.],
@@ -254,6 +255,15 @@ def main_worker(gpu, ngpus_per_node, args):
                 teacher_model = torch.nn.parallel.DistributedDataParallel(teacher_model, broadcast_buffers=False)
     else:
         raise ValueError("Distributed training is not enabled. Please set --distributed flag.")
+
+    if args.ckpt_path:
+        key = 'model'
+        _ckpt = torch.load(open(args.ckpt_path, "rb"), map_location=torch.device("cpu"))
+        logger.info("Successfully load whole ckpt {} from {}".format(args.ckpt_path, key))
+        # new_state_dict = expand_depth(_ckpt[key], self.state_dict())  # Expand depth of the pretrained weight
+        incompatibleKeys = model.load_state_dict(_ckpt[key], strict=False)
+        logger.info("== missing_keys: {}".format(incompatibleKeys))
+        del _ckpt
 
     if args.kd_ratio > 0:
         teacher_model.eval()
@@ -393,10 +403,7 @@ def main_worker(gpu, ngpus_per_node, args):
                 if args.f_distill:
                     feat_T_s4 = mid_feats_T[3]
                     feat_S_s4 = mid_feats_S[3]
-                    # feat_S_s0.shape (4, 64, 88, 304)
-                    # feat_S_s1.shape (4, 128, 44, 152)
-                    # feat_S_s2.shape (4, 256, 22, 76)
-                    # feat_S_s3.shape (4, 512, 11, 38)
+
                     spat_loss, freq_loss = dis_modules_s4(feat_S_s4, feat_T_s4)
                     # print('spat_loss', spat_loss, 'freq_loss', freq_loss)
                     # spat_loss tTensor(43.6711, device='cuda:0', grad_fn=<AliasBackward0>) freq_loss tTensor(31.9551, device='cuda:0', grad_fn=<AliasBackward0>)
@@ -526,7 +533,7 @@ def main():
     os.system(command)
 
     args_out_path = os.path.join(args.log_directory, args.model_name)
-    command = 'cp ' + sys.argv[1] + ' ' + args_out_path
+    command = 'cp ' + sys.argv[1][1:] + ' ' + args_out_path
     os.system(command)
 
     save_files = True

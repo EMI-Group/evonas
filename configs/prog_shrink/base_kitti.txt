@@ -1,7 +1,6 @@
 --teacher_config ./configs/depth_any_kitti.py
 --model_name MambaDepth
 --encoder SuperNet
---pretrain ./vssd_supernet_imagenet_1k.pth
 --dataset kitti
 --data_path ../../dataset/KITTI/
 --gt_path ../../dataset/KITTI/data_depth_annotated/
@@ -21,10 +20,10 @@
 --do_kb_crop
 --do_random_rotate
 --degree 1.0
---log_directory ./runs/exp02_kd/08_kd01_fd_e40/
+--log_directory ./runs/nyu_base_config/
 --multiprocessing_distributed
 --dist_url tcp://127.0.0.1:2351
---devices 0,1,2,3,4,5,6,7
+--devices 0,1,2,3
 
 --log_freq 1000
 --do_online_eval

@@ -20,6 +20,8 @@ Using **Once-for-All Progressive Shrinking**
 
 2025/7/9 update SuperNet Fine-tuning(final)(depth 01bit code, script of whole run)
 
+2025/7/10 update SuperNet Fine-tuning(final)(Recover supernet depth to [2,4,8,4], add run_script on nyu, solve some bug)
+
 ------
 
 ##  Search Space
@@ -46,7 +48,7 @@ configs/prog_shrink
 ├── supernet_train_kitti_7_depth.txt    # Step 7: relax free Depth
 ```
 
-start run
+#### start run
 
 ```
 python MambaDepthNAS/train.py configs/prog_shrink/supernet_train_kitti_0_maxnet.txt
@@ -58,7 +60,7 @@ python MambaDepthNAS/train.py configs/prog_shrink/supernet_train_kitti_2_state_2
 or
 
 ```
-sh whole_run.sh
+sh whole_run_kitti.sh
 ```
 
 ------
@@ -77,7 +79,7 @@ sh whole_run.sh
     - [ ] ~~Parallel train SubNet~~
     - [x] Knowledge Distillation (bug fixed)
     - [x] add new kd strategy (part1 and part2 of scaleKD)
-    - [x] Change supernet depth to [8,8,8,8] and pretrained weights
+    - [x] ~~Change supernet depth to [8,8,8,8] and pretrained weights~~
 - [x] NAS Search (pymoo, param_cal)
     - [x] add depth choose ~~or only one layer~~
     - [ ] ~~recompute the Params and FLOP of subnet~~

@@ -656,11 +656,11 @@ class Backbone_VMAMBA2(VMAMBA2):
         try:
             _ckpt = torch.load(open(ckpt, "rb"), map_location=torch.device("cpu"))
             print(f"Successfully load ckpt {ckpt} from {key}")
-            new_state_dict = expand_depth(_ckpt[key], self.state_dict())  # Expand depth of the pretrained weight
-            incompatibleKeys = self.load_state_dict(new_state_dict, strict=False)
+            # new_state_dict = expand_depth(_ckpt[key], self.state_dict())  # Expand depth of the pretrained weight
+            incompatibleKeys = self.load_state_dict(_ckpt[key], strict=False)
             print(incompatibleKeys)
             del _ckpt
-            del new_state_dict
+            # del new_state_dict
         except Exception as e:
             print(f"Failed loading checkpoint form {ckpt}: {e}")
 

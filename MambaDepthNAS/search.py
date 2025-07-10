@@ -140,6 +140,7 @@ class NasCodec:
             'expand':    [self.space['expand'][j] for j in ex_idx],
         }
     
+# TODO input: model; output: abs_rel, latency and mac
 def online_eval(model, dataloader_eval, sample_config, gpu, ngpus, post_process=False, logger=None):
     var_params = unwrap_model(model).backbone.get_sampled_params_numel(sample_config) # / 10.**6
     invar_params = count_invariant_params(model)
