@@ -3,12 +3,12 @@ set -e
 
 base_configs="configs/prog_shrink/base_kitti.txt"
 
-# # 00 maxnet
-# python MambaDepthNAS/train.py "@${base_configs}" \
-#         --pretrain ./vssd_supernet_imagenet_1k.pth \
-#         --log_directory ./runs/fine_tune_supernet_kitti/00_maxnet/  \
-#         --num_epochs 40 \
-#         --warmup_epochs 3
+# 00 maxnet
+python MambaDepthNAS/train.py "@${base_configs}" \
+        --pretrain ./vssd_supernet_imagenet_1k.pth \
+        --log_directory ./runs/fine_tune_supernet_kitti/00_maxnet/  \
+        --num_epochs 40 \
+        --warmup_epochs 3
 
 sleep 3
 # 01 d_state part1

@@ -1,30 +1,29 @@
 --teacher_config ./configs/depth_any_kitti.py
---model_name MambaDepth
---encoder SuperNet
---pretrain ./runs/fine_tune_supernet_kitti/03_mlp_1/abs_rel_best_weight.pth
+--model_name MambaDepth_retrain
+--encoder VSSD_final
 --dataset kitti
 --data_path ../../dataset/KITTI/
 --gt_path ../../dataset/KITTI/data_depth_annotated/
 --filenames_file data_splits/eigen_train_files_with_gt.txt
---batch_size 16
---num_epochs 20
+--batch_size 1
+--num_epochs 40
 --learning_rate 5e-5
 --min_lr 5e-6
 --warmup_lr 5e-7
---warmup_epochs 1
+--warmup_epochs 3
 --weight_decay 0.05
 --max_norm -1
---num_threads 4
+--num_threads 0
 --input_height 352
 --input_width 1216
 --max_depth 80
 --do_kb_crop
 --do_random_rotate
 --degree 1.0
---log_directory ./runs/fine_tune_supernet_kitti/04_mlp_2/
+--log_directory ./runs/retrain_kitti_base_config/
 --multiprocessing_distributed
---dist_url tcp://127.0.0.1:2311
---devices 0,1,2,3,4,5,6,7
+--dist_url tcp://127.0.0.1:2354
+--devices 4,5,6,7
 
 --log_freq 1000
 --do_online_eval
@@ -36,12 +35,15 @@
 --max_depth_eval 80
 --garg_crop
 
---dynamic_batch_size 2
+--ckpt_path /data/code_yzh/DistillNAS/runs/fine_tune_supernet_kitti/07_depth/abs_rel_best_weight.pth
+
+--mlp_ratio "[0.5, 2.0, 4.0, 1.0]"
+--d_state "[48, 64, 16, -1]"
+--ssd_expand "[1, 4, 2, -1]"
+--depth "[2, 1, 4, 1]"
+
+--dynamic_batch_size 1
 --kd_ratio 0.1
 --f_distill
 --alpha_1 0.08
 --alpha_2 0.06
-
---mlp_ratio "[0.5, 1.0, 2.0, 3.0, 3.5, 4.0]"
---d_state "[16, 32, 48, 64]"
---ssd_expand "[4]"

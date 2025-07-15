@@ -8,7 +8,7 @@ Using **Once-for-All Progressive Shrinking**
 
 2025/4/11 update SuperNet(VSSD) and Search Space
 
-2025/4/15 update NAS Search(optimize d1 and params)
+2025/4/15 update NAS Search(Optimize d1 and params)
 
 2025/6/27 update SuperNet Fine-tuning(Training strategy, Only sample one layer per stage, ...)
 
@@ -16,11 +16,13 @@ Using **Once-for-All Progressive Shrinking**
 
 2025/7/7 update SuperNet Fine-tuning(Add CAP and DFM of scaleKD)
 
-2025/7/8 update SuperNet Fine-tuning(Change supernet depth to [8,8,8,8], pretrained weights and sample code)
+2025/7/8 update SuperNet Fine-tuning(Change supernet depth to [8,8,8,8], Pretrained weights and sample code)
 
-2025/7/9 update SuperNet Fine-tuning(final)(depth 01bit code, script of whole run)
+2025/7/9 update SuperNet Fine-tuning(final)(Depth 01bit code, Script of whole run)
 
-2025/7/10 update SuperNet Fine-tuning(final)(Recover supernet depth to [2,4,8,4], add run_script on nyu, solve some bug)
+2025/7/10 update SuperNet Fine-tuning(final)(Recover supernet depth to [2,4,8,4], Add run_script on nyu, Solve some bug)
+
+2025/7/15 update NAS Search(Optimize Abs_rel, Latency and MACs, Special corssover and mutation for mixed code, Check any stage is all zeros, Accelerate the verification process)
 
 ------
 
@@ -83,8 +85,9 @@ sh whole_run_kitti.sh
 - [x] NAS Search (pymoo, param_cal)
     - [x] add depth choose ~~or only one layer~~
     - [ ] ~~recompute the Params and FLOP of subnet~~
-    - [ ] optimization objective Latency and MAC
-    - [ ] crossover and mutation separate mixed code
+    - [x] optimization extra objectives (Latency and MAC)
+    - [x] crossover and mutation separate mixed code
+    - [x] open batch size > 1 for val
 - [ ] Retrain
 
 ------

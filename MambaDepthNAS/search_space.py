@@ -98,7 +98,7 @@ def main():
                              d_state=[16, 32, 48, 64], 
                              ssd_expand=[0.5, 1.0, 2.0, 3.0, 4.0], 
                              depth=[2, 4, 8, 4],  # 注意depth[i]是是第i个阶段的深度最大值
-                             open_depth=True)  # 是否开放深度采样
+                             open_depth=True)
     
     sam_config = ss.sample(1)[0]
     print("Sampled architecture configuration:", sam_config)

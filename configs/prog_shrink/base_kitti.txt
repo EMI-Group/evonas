@@ -20,7 +20,7 @@
 --do_kb_crop
 --do_random_rotate
 --degree 1.0
---log_directory ./runs/nyu_base_config/
+--log_directory ./runs/kitti_base_config/
 --multiprocessing_distributed
 --dist_url tcp://127.0.0.1:2351
 --devices 0,1,2,3

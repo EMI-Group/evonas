@@ -1,0 +1,21 @@
+--model_name MambaDepth
+--encoder VSSD
+--dataset kitti
+
+--checkpoint_path /data/code_yzh/DistillNAS/runs/fine_tune_supernet_kitti/00_maxnet/abs_rel_best_weight.pth
+
+--input_height 352
+--input_width 1216
+--max_depth 80
+--do_kb_crop
+--do_random_rotate
+--degree 1.0
+
+
+--data_path_eval ../../dataset/KITTI/
+--gt_path_eval ../../dataset/KITTI/data_depth_annotated/
+--filenames_file_eval data_splits/eigen_test_files_with_gt_safe.txt
+--min_depth_eval 1e-3
+--max_depth_eval 80
+--garg_crop
+

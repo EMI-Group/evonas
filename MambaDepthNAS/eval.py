@@ -2,6 +2,7 @@ import torch
 import torch.backends.cudnn as cudnn
 
 import os, sys
+os.environ['CUDA_VISIBLE_DEVICES'] = '4'
 import argparse
 import numpy as np
 from tqdm import tqdm
@@ -37,6 +38,7 @@ parser.add_argument('--do_kb_crop',                            help='if set, cro
 parser.add_argument('--use_right',                             help='if set, will randomly use right images when train on KITTI', action='store_true')
 
 # Eval
+parser.add_argument('--batch_size_val',            type=int,   help='validation dataloader batch size', default=1)
 parser.add_argument('--data_path_eval',            type=str,   help='path to the data for evaluation', required=False)
 parser.add_argument('--gt_path_eval',              type=str,   help='path to the groundtruth data for evaluation', required=False)
 parser.add_argument('--filenames_file_eval',       type=str,   help='path to the filenames text file for evaluation', required=False)
@@ -129,7 +131,7 @@ def eval(model, dataloader_eval, post_process=False):
 def main_worker(args):
 
     # MambaDepth model
-    model = MambaDepth(version=args.encoder, inv_depth=False, max_depth=args.max_depth, pretrained=None)
+    model = MambaDepth(args=args, version=args.encoder, inv_depth=False, max_depth=args.max_depth, pretrained=None)
     model.train()
 
     num_params = sum([np.prod(p.size()) for p in model.parameters()])

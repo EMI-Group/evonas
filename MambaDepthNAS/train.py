@@ -31,22 +31,13 @@ from search_space import MambaSearchSpace
 
 ### final
 # sh whole_run.sh
-# or
-# python MambaDepthNAS/train.py configs/prog_shrink/supernet_train_kitti_0_maxnet.txt
-# python MambaDepthNAS/train.py configs/prog_shrink/supernet_train_kitti_1_state_1.txt
-# python MambaDepthNAS/train.py configs/prog_shrink/supernet_train_kitti_2_state_2.txt
-# python MambaDepthNAS/train.py configs/prog_shrink/supernet_train_kitti_3_mlp_1.txt
-# python MambaDepthNAS/train.py configs/prog_shrink/supernet_train_kitti_4_mlp_2.txt
-# python MambaDepthNAS/train.py configs/prog_shrink/supernet_train_kitti_5_ssd_1.txt
-# python MambaDepthNAS/train.py configs/prog_shrink/supernet_train_kitti_6_ssd_2.txt
-# python MambaDepthNAS/train.py configs/prog_shrink/supernet_train_kitti_7_depth.txt
 
 def parse_args():
     parser = argparse.ArgumentParser(description='MambaDepth PyTorch implementation.', fromfile_prefix_chars='@')
     parser.convert_arg_line_to_args = convert_arg_line_to_args
-    parser.add_argument("--teacher_config",            type=str,   required=True)
+    
     parser.add_argument('--model_name',                type=str,   help='model name', default='MambaDepth')
-    parser.add_argument('--encoder',                   type=str,   help='type of encoder, base07, large07', default='large07')
+    parser.add_argument('--encoder',                   type=str,   help='type of encoder, base07, large07', default='SuperNet')
     parser.add_argument('--pretrain',                  type=str,   help='path of pretrained encoder', default=None)
     parser.add_argument('--devices',                    type=str, default='0,1', help='CUDA_VISIBLE_DEVICES value, e.g., "0" or "0,1"')
 
@@ -67,6 +58,7 @@ def parse_args():
     parser.add_argument('--min_ones',                  type=int,    help='minimum number of active layers in each stage during sampling', default=1)
 
     # Knowledge distillation
+    parser.add_argument("--teacher_config",            type=str,   required=False)
     parser.add_argument('--kd_ratio',                  type=float,   help='the ratio of knowledge distillation', default=0)
     parser.add_argument('--f_distill',                 action='store_true',   help='if set, will use mid feature distillation loss')
     parser.add_argument('--alpha_1',                   type=float, help='weight coefficient for spatial loss (spat_loss)', default=0.08)
@@ -84,7 +76,6 @@ def parse_args():
     parser.add_argument('--warmup_epochs',             type=int, help='', default=3)
     parser.add_argument('--weight_decay',              type=float, help='', default=0.05)
     parser.add_argument('--dynamic_batch_size',        type=int,   help='the number of dynamic batch size', default=1)
-    parser.add_argument('--resume',                               help='if used with checkpoint_path, will restart training from step zero', action='store_true')
     parser.add_argument('--batch_size',                type=int,   help='this is the global batch size for all gpus', default=4)
     parser.add_argument('--num_epochs',                type=int,   help='number of epochs', default=50)
     parser.add_argument('--learning_rate',             type=float, help='initial learning rate', default=1e-4)
@@ -110,6 +101,7 @@ def parse_args():
                                                                         'fastest way to use PyTorch for either single node or '
                                                                         'multi node data parallel training', action='store_true',)
     # Online eval
+    parser.add_argument('--batch_size_val',            type=int,   help='validation dataloader batch size', default=1)
     parser.add_argument('--do_online_eval',                        help='if set, perform online eval in every eval_freq steps', action='store_true')
     parser.add_argument('--data_path_eval',            type=str,   help='path to the data for online evaluation', required=False)
     parser.add_argument('--gt_path_eval',              type=str,   help='path to the groundtruth data for online evaluation', required=False)

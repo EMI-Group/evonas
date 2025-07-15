@@ -19,7 +19,7 @@ class MambaDepth(nn.Module):
     Depth network based on VSSD-T + SpatialMamba.
     """
     def __init__(self, args=None, version=None, inv_depth=False, pretrained=None, 
-                    frozen_stages=-1, min_depth=0.1, max_depth=100.0, **kwargs):
+                    frozen_stages=-1, min_depth=0.1, max_depth=100.0, selected_config=None, **kwargs):
         super().__init__()
 
         self.inv_depth = inv_depth
@@ -63,21 +63,49 @@ class MambaDepth(nn.Module):
                 patch_size=4,  # 无实际意义
                 in_chans=3,
                 embed_dim=64,
-                depths=[2, 4, 8, 4],
+                depths=[2, 4, 8, 4],  # note
                 num_heads=[2, 4, 8, 16],
-                mlp_ratio=4.0,
+                mlp_ratio=4.0,  # note
                 drop_rate=0.0,
                 drop_path_rate=0.2,
                 simple_downsample=False,
                 simple_patch_embed=False,
-                ssd_expansion=2,
+                ssd_expansion=4,  # note
                 ssd_ngroups=1,
                 ssd_chunk_size=256,
                 linear_attn_duality=True,
                 lepe=False,
                 attn_types=['mamba2', 'mamba2', 'mamba2', 'standard'],
                 bidirection=False,
-                d_state=64,
+                d_state=64,  # note
+                ssd_positve_dA=True,
+                # pretrained weight
+                pretrained=pretrained
+            )
+            in_channels = [64, 128, 256, 512]
+        
+        elif version == 'VSSD_final':
+            from .VSSD.mamba2_final import Backbone_VMAMBA2_Final
+            self.backbone = Backbone_VMAMBA2_Final(
+                image_size=(args.input_height, args.input_width),
+                patch_size=4,  # 无实际意义
+                in_chans=3,
+                embed_dim=64,
+                depths=selected_config['depth'],
+                num_heads=[2, 4, 8, 16],
+                mlp_ratio=selected_config['mlp_ratio'],
+                drop_rate=0.0,
+                drop_path_rate=0.2,
+                simple_downsample=False,
+                simple_patch_embed=False,
+                ssd_expansion=selected_config['ssd_expand'],
+                ssd_ngroups=1,
+                ssd_chunk_size=256,
+                linear_attn_duality=True,
+                lepe=False,
+                attn_types=['mamba2', 'mamba2', 'mamba2', 'standard'],
+                bidirection=False,
+                d_state=selected_config['d_state'],
                 ssd_positve_dA=True,
                 # pretrained weight
                 pretrained=pretrained
@@ -210,6 +238,7 @@ class MambaDepth(nn.Module):
         
         if mid_features:
             return depth, feats
+        
         return depth
 
 

@@ -47,7 +47,7 @@ class NewDataLoader(object):
                 self.eval_sampler = DistributedSamplerNoEvenlyDivisible(self.testing_samples, shuffle=False)
             else:
                 self.eval_sampler = None
-            self.data = DataLoader(self.testing_samples, 1,
+            self.data = DataLoader(self.testing_samples, args.batch_size_val,
                                    shuffle=False,
                                    num_workers=1,
                                    pin_memory=True,
