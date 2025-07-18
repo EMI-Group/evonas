@@ -9,6 +9,7 @@ import os, sys, time
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, PROJECT_ROOT)
 
+import json, subprocess, tempfile
 import argparse
 import numpy as np
 from tqdm import tqdm
@@ -26,6 +27,8 @@ from pymoo.core.crossover import Crossover
 from pymoo.core.variable import get
 
 from functools import partial
+from pymoo.core.callback import Callback
+import pandas as pd
 
 from utils import post_process_depth, flip_lr, compute_errors, eval_metrics, \
                        convert_arg_line_to_args, get_root_logger, unwrap_model, str2list, is_main_process, compute_metrics
@@ -43,6 +46,7 @@ Note: latency tests included; avoid running other GPU tasks.
 
 ### final
 # python MambaDepthNAS/search.py configs/search/search_kitti.txt 
+# python MambaDepthNAS/search.py configs/search/search_nyu.txt 
 
 def parse_args():
     parser = argparse.ArgumentParser(description='MambaDepth PyTorch implementation.', fromfile_prefix_chars='@')
@@ -84,7 +88,8 @@ def parse_args():
     parser.add_argument('--use_right',                             help='if set, will randomly use right images when train on KITTI', action='store_true')
 
     # Multi-gpu training
-    parser.add_argument('--num_threads',               type=int,   help='number of threads to use for data loading', default=1)
+    parser.add_argument('--num_threads_val',               type=int,   help='number of threads to use for data loading', default=1)
+    parser.add_argument('--persistent_workers',        action='store_true',   help='if set the data loader will not shut down the worker processes after a dataset has been consumed once')
     parser.add_argument('--world_size',                type=int,   help='number of nodes for distributed training', default=1)
     parser.add_argument('--rank',                      type=int,   help='node rank for distributed training', default=0)
     parser.add_argument('--dist_url',                  type=str,   help='url used to set up distributed training', default='tcp://127.0.0.1:1234')
@@ -114,35 +119,68 @@ def parse_args():
     return args
 
 
-@torch.no_grad()
-def test_latency_mac(model, input_shape=(1,3,224,224), device='cuda', warmup=50, repeat=30):
-    model.eval()
-    input_shape = (1, *input_shape[1:])
-    input_tensor = torch.randn(*input_shape).to(device)
 
-    # warmup
-    torch.cuda.synchronize()
-    for _ in range(warmup):
-        _ = model(input_tensor)
-    torch.cuda.synchronize()
+def test_lat_mac(args, sample_config_list, gpu, ngpus):
+    ### latency
+    multi_config  = []
+    for sample_config in sample_config_list:
+        fps_config = {
+            "mlp_ratio": sample_config["mlp_ratio"],
+            "d_state": sample_config["d_state"] + [-1],
+            "ssd_expand": sample_config["expand"] + [-1],
+            "depth": [int(sum(dl)) for dl in sample_config["depth"]],
+        }
+        multi_config.append(fps_config)
+    
+    fd, config_path = tempfile.mkstemp(dir="tmp", suffix=".json")
+    with os.fdopen(fd, "w") as f:
+        json.dump(multi_config , f)
+    try:
+        result = subprocess.run(
+            [
+                "python", "MambaDepthNAS/sub_test_latency.py",
+                "--config_file", config_path,
+                "--dataset", args.dataset
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+            env={
+                **os.environ,
+                "OMP_NUM_THREADS": "1",
+                "MKL_NUM_THREADS": "1",
+                "CUDA_VISIBLE_DEVICES": args.devices.split(',')[gpu]}
+        )
+    except subprocess.CalledProcessError as e:
+        print("Child process failed!")
+        print("Return code:", e.returncode)
+        print("STDOUT:", e.stdout)
+        print("STDERR:", e.stderr)
+        raise
 
-    # measure
-    tic1 = time.perf_counter()
-    for _ in range(repeat):
-        _ = model(input_tensor)
-    torch.cuda.synchronize()
-    tic2 = time.perf_counter()
+    finally:
+        if os.path.exists(config_path):
+            os.remove(config_path)
+            # print(f"[INFO] Deleted temp config file: {config_path}")
 
-    total_time = (tic2 - tic1)
-    avg_latency = total_time / repeat * 1000  # ms
-    # fps = repeat / total_time
+    metrics_list = json.loads(result.stdout)
+    other_tensor = torch.tensor(
+        [[m["latency"], m["macs"], m["params"]] for m in metrics_list],
+        device=gpu
+    )
 
-    macs, params = get_model_complexity_info(model, tuple(input_shape[1:]), as_strings=False, backend='pytorch', print_per_layer_stat=False)
+    if args.multiprocessing_distributed:
+        dist.all_reduce(tensor=other_tensor, op=dist.ReduceOp.SUM)
 
-    macs_G = macs / 1e9
-    params_M = params / 1e6
+    other_tensor /= ngpus
 
-    return avg_latency, macs_G, params_M
+    latency_list = other_tensor[:, 0].cpu().tolist()
+    macs_list    = other_tensor[:, 1].cpu().tolist()
+    # params_list = other_tensor[:, 2].cpu().tolist()
+
+    # latency, macs_g, params_m = (other_tensor / ngpus).cpu().numpy()
+
+    return latency_list, macs_list
 
 
 @torch.no_grad()
@@ -171,38 +209,18 @@ def online_eval(args, model, dataloader_eval, gpu, ngpus, post_process=False, lo
             measures = compute_metrics(gt_d, pr_d, args)
             eval_measures[:9] += torch.tensor(measures).cuda(device=gpu)
             eval_measures[9] += 1
-    
-    ### latency
-    fps_config = {}
-    fps_config['mlp_ratio'] = sample_config['mlp_ratio']
-    fps_config['d_state'] = sample_config['d_state'] + [-1]
-    fps_config['ssd_expand'] = sample_config['expand'] + [-1]
-    fps_config['depth'] = [sum(dl) for dl in sample_config['depth']]
-
-    model_fps = MambaDepth(args=args, version='VSSD_fps', fps_config=fps_config)
-    model_fps.cuda(gpu)
-    model_fps.eval()
-
-    latency_v, mac_v, params_v = test_latency_mac(model_fps, image.shape, gpu)
-    # print(f'latency_v, mac_v, params_v: {latency_v, mac_v, params_v}, rank: {gpu}')
-    other_tensor = torch.tensor([latency_v, mac_v, params_v], device=gpu)
+        # break  # TODO
 
     if args.multiprocessing_distributed:
-        group = dist.new_group([i for i in range(ngpus)])
-        dist.all_reduce(tensor=eval_measures, op=dist.ReduceOp.SUM, group=group)
-        dist.all_reduce(tensor=other_tensor, op=dist.ReduceOp.SUM, group=group)
+        # group = dist.new_group([i for i in range(ngpus)])
+        dist.all_reduce(tensor=eval_measures, op=dist.ReduceOp.SUM)
 
     eval_measures_cpu = eval_measures.cpu()
     cnt = eval_measures_cpu[9].item()
     eval_measures_cpu /= cnt
-    latency, macs_g, params_m = (other_tensor / ngpus).cpu().numpy()
-    # print(f'latency_mean, macs_g, params_m: {latency_mean, macs_g, params_m}')
-
     abs_rel = eval_measures_cpu[1]
-    del model_fps
-    torch.cuda.empty_cache()
 
-    return abs_rel, latency, macs_g
+    return abs_rel
 
 
 def has_empty_stage(depth_list):
@@ -341,8 +359,9 @@ class SafeIntegerRandomSampling(IntegerRandomSampling):
 
 
 class NasProblem(Problem):
-    def __init__(self, eval_func, search_sapce, logger=None):
+    def __init__(self, eval_func, latency_func, search_sapce, logger=None):
         self.eval_func = eval_func
+        self.latency_func = latency_func
         self.ss = search_sapce
         self.logger = logger
         self.generation_id = 1
@@ -366,17 +385,18 @@ class NasProblem(Problem):
         abs_rel_list = []
         latency_list = []
         macs_list = []
+        sample_config_list = []
 
         for _x in x:
             # print('_x:', _x)
             sample_config = self.ss.decode(_x)
-            # print('_x after decode:',sample_config)
-            abs_rel, latency, macs_g = self.eval_func(sample_config=sample_config)
-            # print(f"Evaluating params for {_x}: {params}M, {performance}")
+            sample_config_list.append(sample_config)
 
+            # print('_x after decode:',sample_config)
+            abs_rel = self.eval_func(sample_config=sample_config)
             abs_rel_list.append(abs_rel)
-            latency_list.append(latency)
-            macs_list.append(macs_g)
+
+        latency_list, macs_list = self.latency_func(sample_config_list=sample_config_list)
 
         if is_main_process():
             abs_rounded = [round(float(abs), 4) for abs in abs_rel_list]
@@ -404,6 +424,51 @@ class NasProblem(Problem):
             self.logger.info(f"[Gen {gen}] (New_Pop) abs_rel: mean={abs_rel_np.mean():.4f}, min={abs_rel_np.min():.4f}, max={abs_rel_np.max():.4f}")
             self.logger.info(f"[Gen {gen}] (New_Pop) latency: mean={latency_np.mean():.4f}, min={latency_np.min():.4f}, max={latency_np.max():.4f}")
             self.logger.info(f"[Gen {gen}] (New_Pop) macs_g: mean={macs_np.mean():.4f}, min={macs_np.min():.4f}, max={macs_np.max():.4f}")
+
+
+class EvolutionLogger(Callback):
+    def __init__(self, ss, logger=None, auto_save_path=None):
+        super().__init__()
+        self.ss = ss
+        self.logger = logger
+        self.auto_save_path = auto_save_path
+        self.data["gen"] = []
+        self.data["pop"] = []  # 所有种群 目标值 F 值
+        self.data["pop_x"] = []  # 所有种群 编码 X 值
+
+    def notify(self, algorithm):
+        F = algorithm.pop.get("F")
+        X = algorithm.pop.get("X")
+
+        self.data["gen"].append(algorithm.n_gen)
+        self.data.setdefault("pop", []).append(F.tolist())
+        self.data.setdefault("pop_x", []).append(X.tolist())
+
+        if self.logger:
+            metrics = ["abs_rel", "latency", "macs_g"]
+            for i, name in enumerate(metrics):
+                vals = F[:, i]
+                self.logger.info(
+                    f"[Gen {algorithm.n_gen}] (Updated_Pop) {name}: mean={vals.mean():.4f}, min={vals.min():.4f}, max={vals.max():.4f}"
+                )
+        if self.auto_save_path:
+            self.save(self.auto_save_path)
+
+    def save(self, save_path):
+        pop_rows = []
+        for gen, (F, X) in enumerate(zip(self.data["pop"], self.data["pop_x"])):
+            for f, x in zip(F, X):
+                config = self.ss.decode(x)
+                row = {
+                    "gen": gen + 1,
+                    "abs_rel": round(f[0], 4),
+                    "latency": round(f[1], 4),
+                    "macs": round(f[2], 4),
+                    "config": str(config).replace("\n", "")
+                }
+                pop_rows.append(row)
+        df_pop = pd.DataFrame(pop_rows)
+        df_pop.to_csv(f"{save_path}/pop.csv", index=False)
 
 
 def main_worker(gpu, ngpus_per_node, args):
@@ -471,7 +536,9 @@ def main_worker(gpu, ngpus_per_node, args):
         logger.info(f"==> Starting evolution...")
     
     eval_func = partial(online_eval, args=args, model=model, dataloader_eval=dataloader_eval, gpu=gpu, ngpus=ngpus_per_node, post_process=True, logger=logger)
-    problem = NasProblem(eval_func=eval_func, search_sapce=ss, logger=logger)
+    latency_func = partial(test_lat_mac, args=args, gpu=gpu, ngpus=ngpus_per_node)
+    problem = NasProblem(eval_func=eval_func, latency_func=latency_func, search_sapce=ss, logger=logger)
+    logger_cb = EvolutionLogger(ss=ss, logger=logger, auto_save_path=args.log_directory)  # to solve GPU Memory error
     method = NSGA2(
         pop_size=args.population_size,  # initialize with current nd archs
         sampling=SafeIntegerRandomSampling(depth=ss.depth),
@@ -480,18 +547,15 @@ def main_worker(gpu, ngpus_per_node, args):
         eliminate_duplicates=True)
 
     res = minimize(
-        problem, method, termination=('n_gen', args.n_iter), save_history=True, verbose=False, seed=1274395)
+        problem, method, termination=('n_gen', args.n_iter), save_history=False, callback=logger_cb, verbose=False, seed=1274395)
     
     ### show results
     if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
+        
+        # save all pop
+        logger_cb.save(save_path=args.log_directory)
 
-        for gen in res.history:
-            pop_X = gen.pop.get("X")
-            pop_F = gen.pop.get("F")
-            logger.info(f"Generation: {gen.n_gen}")
-            logger.info(f"Solutions:\n{pop_X}")
-            logger.info(f"Objective Values:\n{pop_F}")
-
+        # show best pop
         optimal_solutions = res.X.tolist()
         optimal_objective_values = res.F.tolist()
 
@@ -513,6 +577,10 @@ def main_worker(gpu, ngpus_per_node, args):
 def main():
     args = parse_args()
     os.environ["CUDA_VISIBLE_DEVICES"]=args.devices
+    os.environ["OMP_NUM_THREADS"] = "1"
+    os.environ["MKL_NUM_THREADS"] = "1"
+    os.environ["OPENBLAS_NUM_THREADS"] = "1"
+    torch.set_num_threads(1)
 
     command = 'mkdir -p ' + os.path.join(args.log_directory, args.model_name)
     os.system(command)

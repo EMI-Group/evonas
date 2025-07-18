@@ -24,6 +24,10 @@ Using **Once-for-All Progressive Shrinking**
 
 2025/7/15 update NAS Search(Optimize Abs_rel, Latency and MACs, Special corssover and mutation for mixed code, Check any stage is all zeros, Accelerate the verification process)
 
+2025/7/17 update NAS Search(Subprocess to test latency, Sovle GPU memory bug v1 by `save_history=False`)
+
+2025/7/18 update NAS Search(Fixed GPU memory bug v2 by `group=None` , Accelerate evaluation by `persistent_workers=True`, Centralized processing of latency testing)
+
 ------
 
 ##  Search Space
@@ -88,7 +92,13 @@ sh whole_run_kitti.sh
     - [x] optimization extra objectives (Latency and MAC)
     - [x] crossover and mutation separate mixed code
     - [x] open batch size > 1 for val
+    - [x] use subprocess to test latency
+    - [x] save_history set False to solve abnormal increase in GPU memory (add EvolutionLogger to replace)
+    - [ ] parallel evaluation
+    - [x] add GIFs images that display the evolutionary trajectory
 - [ ] Retrain
+    - [x] build selected network by searched arch code
+    - [ ] load and map weight from supernet
 
 ------
 

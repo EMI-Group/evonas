@@ -90,7 +90,9 @@ def parse_args():
     parser.add_argument('--use_right',                             help='if set, will randomly use right images when train on KITTI', action='store_true')
 
     # Multi-gpu training
+    parser.add_argument('--num_threads_val',               type=int,   help='number of threads to use for data loading', default=1)
     parser.add_argument('--num_threads',               type=int,   help='number of threads to use for data loading', default=1)
+    parser.add_argument('--persistent_workers',        action='store_true',   help='if set the data loader will not shut down the worker processes after a dataset has been consumed once')
     parser.add_argument('--world_size',                type=int,   help='number of nodes for distributed training', default=1)
     parser.add_argument('--rank',                      type=int,   help='node rank for distributed training', default=0)
     parser.add_argument('--dist_url',                  type=str,   help='url used to set up distributed training', default='tcp://127.0.0.1:1234')

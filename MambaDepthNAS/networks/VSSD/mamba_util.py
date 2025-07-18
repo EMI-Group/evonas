@@ -15,6 +15,7 @@ from timm.models.layers import DropPath, to_2tuple, trunc_normal_
 # yzh
 from .module.Linear_super import LinearSuper
 import re
+from typing import Dict, List
 
 class Mlp(nn.Module):
     def __init__(self, in_features, hidden_features=None, out_features=None, act_layer=nn.GELU, drop=0.):
@@ -264,3 +265,60 @@ def expand_depth(ori_state_dict, new_state_dict):
     # 'outnorm0.weight', 'outnorm0.bias', 'outnorm1.weight', 'outnorm1.bias', 'outnorm2.weight', 'outnorm2.bias', 'outnorm3.weight', 'outnorm3.bias' is for classification task
 
     return new_state_dict
+
+
+def select_depth_from_supernet(supernet_state_dict: Dict[str, torch.Tensor],
+                                target_state_dict: Dict[str, torch.Tensor],
+                                depth_mask: List[List[int]]) -> Dict[str, torch.Tensor]:
+    """
+    Copy selected blocks from a supernet's state_dict to the target model's state_dict
+    according to a binary depth mask.
+
+    Args:
+        supernet_state_dict: The full supernet parameter dictionary.
+        target_state_dict: The new model's parameter dictionary (to update).
+        depth_mask: List of lists indicating which blocks to keep per stage.
+
+    Returns:
+        Updated target_state_dict with selected weights copied from the supernet.
+    """
+    missing_keys = []
+
+    # Precompute mapping from new block index -> supernet block index per stage
+    block_index_map = []
+    for stage_mask in depth_mask:  # [[1, 1], [0, 0, 0, 1], ...]
+        stage_map = []
+        for i, m in enumerate(stage_mask):  # [1, 1]
+            if m == 1:
+                stage_map.append(i)  # [0, 1]
+        block_index_map.append(stage_map)  # [[0, 1], [3], ...]
+
+    for key in target_state_dict.keys():
+        match = re.search(r'layers\.(\d+)\.blocks\.(\d+)(\..+)', key)
+        if match:
+            stage_str, block_str, suffix = match.groups()
+            stage = int(stage_str)
+            block = int(block_str)
+            try:
+                mapped_block = block_index_map[stage][block]
+                super_key = re.sub(rf'(layers\.{stage}\.blocks\.){block}', rf'\g<1>{mapped_block}', key)
+
+                if super_key in supernet_state_dict and supernet_state_dict[super_key].shape == target_state_dict[key].shape:
+                    target_state_dict[key] = supernet_state_dict[super_key].clone()
+                    print(f'{super_key} --> {key}')
+                else:
+                    missing_keys.append(key)
+                    print(f'1 {key}, {supernet_state_dict[super_key].shape}, {target_state_dict[key].shape}')
+            except (IndexError, KeyError):
+                missing_keys.append(key)
+                print(f'2 {key}')
+        else:
+            # direct copy if key exists
+            if key in supernet_state_dict and supernet_state_dict[key].shape == target_state_dict[key].shape:
+                target_state_dict[key] = supernet_state_dict[key].clone()
+            else:
+                missing_keys.append(key)
+                print(f'3 {key}')
+
+    print("Missing keys:", missing_keys)
+    return target_state_dict

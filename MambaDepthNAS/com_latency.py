@@ -98,7 +98,7 @@ def main_worker(args):
 
 
     # MambaDepth model
-    model = MambaDepth(version=args.encoder, args=args, fps_config=config)
+    model = MambaDepth(version=args.encoder, args=args, selected_config=config)
     model.train()
 
     # backbone_params = list(model.backbone.parameters())

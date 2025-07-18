@@ -5,7 +5,8 @@
 --data_path ../../dataset/KITTI/
 --gt_path ../../dataset/KITTI/data_depth_annotated/
 --filenames_file data_splits/eigen_train_files_with_gt.txt
---num_threads 1
+--num_threads_val 1
+--persistent_workers
 --batch_size_val 4
 --input_height 352
 --input_width 1216

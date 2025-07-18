@@ -22,6 +22,7 @@ from tensorboardX import SummaryWriter
 from utils import post_process_depth, flip_lr, silog_loss, compute_errors, eval_metrics, \
                        block_print, enable_print, normalize_result, inv_normalize, convert_arg_line_to_args, get_root_logger, unwrap_model, str2list, infer, compute_metrics
 from networks.model import MambaDepth
+from networks.VSSD.mamba_util import select_depth_from_supernet
 
 '''fine-tune the final selected model'''
 
@@ -85,7 +86,9 @@ def parse_args():
     parser.add_argument('--use_right',                             help='if set, will randomly use right images when train on KITTI', action='store_true')
 
     # Multi-gpu training
+    parser.add_argument('--num_threads_val',               type=int,   help='number of threads to use for data loading', default=1)
     parser.add_argument('--num_threads',               type=int,   help='number of threads to use for data loading', default=1)
+    parser.add_argument('--persistent_workers',        action='store_true',   help='if set the data loader will not shut down the worker processes after a dataset has been consumed once')
     parser.add_argument('--world_size',                type=int,   help='number of nodes for distributed training', default=1)
     parser.add_argument('--rank',                      type=int,   help='node rank for distributed training', default=0)
     parser.add_argument('--dist_url',                  type=str,   help='url used to set up distributed training', default='tcp://127.0.0.1:1234')
@@ -142,8 +145,8 @@ def online_eval(args, model, dataloader_eval, gpu, ngpus, post_process=False, lo
         eval_measures[9] += 1
 
     if args.multiprocessing_distributed:
-        group = dist.new_group([i for i in range(ngpus)])
-        dist.all_reduce(tensor=eval_measures, op=dist.ReduceOp.SUM, group=group)
+        # group = dist.new_group([i for i in range(ngpus)])
+        dist.all_reduce(tensor=eval_measures, op=dist.ReduceOp.SUM)
 
     if not args.multiprocessing_distributed or gpu == 0:
         eval_measures_cpu = eval_measures.cpu()
@@ -179,13 +182,13 @@ def main_worker(gpu, ngpus_per_node, args):
         logger.info('args: '+str(args))
 
     # MambaDepth model
-    selected_config= {}
-    selected_config['mlp_ratio'] = args.mlp_ratio
-    selected_config['d_state'] = args.d_state
-    selected_config['ssd_expand'] = args.ssd_expand
-    selected_config['depth'] = args.depth
-    model = MambaDepth(args, version=args.encoder, max_depth=args.max_depth, selected_config=selected_config)
-
+    selected_config= {
+        'mlp_ratio': args.mlp_ratio,
+        'd_state': args.d_state,
+        'expand': args.ssd_expand,
+        'depth': args.depth,
+    }
+    model = MambaDepth(args, version=args.encoder, max_depth=args.max_depth)
     model.train()
 
     ### teacher model
@@ -242,10 +245,13 @@ def main_worker(gpu, ngpus_per_node, args):
         key = 'model'
         _ckpt = torch.load(open(args.ckpt_path, "rb"), map_location=torch.device("cpu"))
         logger.info("Successfully load whole ckpt {} from {}".format(args.ckpt_path, key))
-        # new_state_dict = expand_depth(_ckpt[key], self.state_dict())  # Expand depth of the pretrained weight
+        # new_state_dict = select_depth_from_supernet(_ckpt[key], model.state_dict(), depth_mask=args.depth)  # Match depth of the pretrained weight
         incompatibleKeys = model.load_state_dict(_ckpt[key], strict=False)
         logger.info("== missing_keys: {}".format(incompatibleKeys))
         del _ckpt
+    
+    model_module = unwrap_model(model)
+    model_module.backbone.set_sample_config(sample_config=selected_config)
 
     if args.kd_ratio > 0:
         teacher_model.eval()
@@ -400,7 +406,7 @@ def main_worker(gpu, ngpus_per_node, args):
                     param_group['lr'] = current_lr
 
             if args.max_norm > 0:
-                grad_norm = nn.utils.clip_grad_norm_(model.parameters(), args.max_norm)  # TODO max_norm need to set
+                grad_norm = nn.utils.clip_grad_norm_(model.parameters(), args.max_norm)
                 # print(f'grad norm: {grad_norm:.2f}')
             optimizer.step()
 
@@ -501,12 +507,15 @@ def main_worker(gpu, ngpus_per_node, args):
 def main():
     args = parse_args()
     os.environ["CUDA_VISIBLE_DEVICES"]=args.devices
+    os.environ["OMP_NUM_THREADS"] = "1"
+    os.environ["MKL_NUM_THREADS"] = "1"
+    os.environ["OPENBLAS_NUM_THREADS"] = "1"
 
     command = 'mkdir -p ' + os.path.join(args.log_directory, args.model_name)
     os.system(command)
 
     args_out_path = os.path.join(args.log_directory, args.model_name)
-    command = 'cp ' + sys.argv[1] + ' ' + args_out_path
+    command = 'cp ' + sys.argv[1][1:] + ' ' + args_out_path
     os.system(command)
 
     torch.cuda.empty_cache()
