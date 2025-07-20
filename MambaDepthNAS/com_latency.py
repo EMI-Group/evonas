@@ -7,7 +7,7 @@ import argparse
 import numpy as np
 import time
 from networks.model import MambaDepth
-
+from ptflops import get_model_complexity_info
 
 def convert_arg_line_to_args(arg_line):
     for arg in arg_line.split():
@@ -81,10 +81,10 @@ def main_worker(args):
         args.input_width = 640
 
     config= {}
-    config['mlp_ratio'] = [0.5, 2.0, 4.0, 1.0]
-    config['d_state'] = [48, 64, 16, -1]
-    config['ssd_expand'] = [1, 4, 2, -1]
-    config['depth'] = [2, 1, 4, 1]
+    config['mlp_ratio'] = [4.0, 4.0, 4.0, 4.0]
+    config['d_state'] = [64, 64, 64, -1]
+    config['ssd_expand'] = [2, 2, 2, -1]
+    config['depth'] = [2, 4, 8, 4]
 
     # for stage, maxd in enumerate([2, 4, 8, 4]):
     #     for dp in range(1, maxd+1):
@@ -161,6 +161,9 @@ def main_worker(args):
     # ===== Evaluation ======
     model.eval()
     latency_test(model, input_shape)
+
+    macs, params = get_model_complexity_info(model, tuple(input_shape[1:]), as_strings=False, backend='pytorch', print_per_layer_stat=False)
+    print(f'macs: {macs/1e9}G, params: {params/1e6}M')
 
 
 def main():
