@@ -111,9 +111,9 @@ def main():
 
     '''
     e.g.
-    Sampled architecture configuration: {'mlp_ratio': [4.0, 1.0, 4.0, 2.0], 'd_state': [32, 64, 32], 'expand': [4.0, 3.0, 4.0], 'depth': [[1, 1], [0, 0, 0, 1], [1, 0, 0, 0, 1, 1, 0, 1], [0, 1, 1, 1]]}
-    Encoded chromosome: [5, 1, 5, 2, 1, 3, 1, 4, 3, 4, 2, 0, 140, 6]
-    Decoded architecture configuration: {'mlp_ratio': [4.0, 1.0, 4.0, 2.0], 'd_state': [32, 64, 32], 'expand': [4.0, 3.0, 4.0], 'depth': [[1, 1], [0, 0, 0, 1], [1, 0, 0, 0, 1, 1, 0, 1], [0, 1, 1, 1]]}
+    Sampled architecture configuration: {'mlp_ratio': [3.0, 2.0, 0.5, 4.0], 'd_state': [48, 32, 16], 'expand': [2.0, 0.5, 4.0], 'depth': [[1, 1], [0, 0, 1, 0], [0, 0, 1, 0, 0, 0, 1, 1], [1, 0, 1, 1]]}
+    Encoded chromosome: [3, 2, 0, 5, 2, 1, 0, 2, 0, 4, 1, 1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 1, 1, 0, 1, 1]
+    Decoded architecture configuration: {'mlp_ratio': [3.0, 2.0, 0.5, 4.0], 'd_state': [48, 32, 16], 'expand': [2.0, 0.5, 4.0], 'depth': [[1, 1], [0, 0, 1, 0], [0, 0, 1, 0, 0, 0, 1, 1], [1, 0, 1, 1]]}
     '''
 
 if __name__ == "__main__":

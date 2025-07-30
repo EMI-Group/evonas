@@ -31,7 +31,7 @@ class MambaDepth(nn.Module):
         if version == 'SuperNet':
             from .VSSD.mamba2 import Backbone_VMAMBA2
             self.backbone = Backbone_VMAMBA2(
-                image_size=(args.input_height, args.input_width),
+                # image_size=(args.input_height, args.input_width),  # ?
                 patch_size=4,  # 无实际意义
                 in_chans=3,
                 embed_dim=64,
@@ -70,7 +70,7 @@ class MambaDepth(nn.Module):
                 drop_path_rate=0.2,
                 simple_downsample=False,
                 simple_patch_embed=False,
-                ssd_expansion=4,  # note
+                ssd_expansion=2,  # note
                 ssd_ngroups=1,
                 ssd_chunk_size=256,
                 linear_attn_duality=True,

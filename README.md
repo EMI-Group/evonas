@@ -28,6 +28,10 @@ Using **Once-for-All Progressive Shrinking**
 
 2025/7/18 update NAS Search(Fixed GPU memory bug v2 by `group=None` , Accelerate evaluation by `persistent_workers=True`, Centralized processing of latency testing)
 
+2025/7/20 update Retrain(Only train by supernet)
+
+2025/7/23 update tools(Calculate HV, Visualized evolution curve)
+
 ------
 
 ##  Search Space
@@ -55,15 +59,6 @@ configs/prog_shrink
 ```
 
 #### start run
-
-```
-python MambaDepthNAS/train.py configs/prog_shrink/supernet_train_kitti_0_maxnet.txt
-python MambaDepthNAS/train.py configs/prog_shrink/supernet_train_kitti_1_state_1.txt
-python MambaDepthNAS/train.py configs/prog_shrink/supernet_train_kitti_2_state_2.txt
-……
-```
-
-or
 
 ```
 sh whole_run_kitti.sh
@@ -96,6 +91,7 @@ sh whole_run_kitti.sh
     - [x] save_history set False to solve abnormal increase in GPU memory (add EvolutionLogger to replace)
     - [ ] parallel evaluation
     - [x] add GIFs images that display the evolutionary trajectory
+    - [x] add method NSGA-III
 - [ ] Retrain
     - [x] build selected network by searched arch code
     - [ ] load and map weight from supernet

@@ -154,8 +154,8 @@ def online_eval(args, model, dataloader_eval, gpu, ngpus, post_process=False, lo
         eval_measures[9] += 1
 
     if args.multiprocessing_distributed:
-        group = dist.new_group([i for i in range(ngpus)])
-        dist.all_reduce(tensor=eval_measures, op=dist.ReduceOp.SUM, group=group)
+        # group = dist.new_group([i for i in range(ngpus)])
+        dist.all_reduce(tensor=eval_measures, op=dist.ReduceOp.SUM)
 
     if not args.multiprocessing_distributed or gpu == 0:
         eval_measures_cpu = eval_measures.cpu()

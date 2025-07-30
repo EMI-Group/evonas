@@ -25,6 +25,7 @@ from pymoo.operators.crossover.pntx import TwoPointCrossover
 from pymoo.operators.crossover.ux import UniformCrossover
 from pymoo.core.crossover import Crossover
 from pymoo.core.variable import get
+from pymoo.util.misc import crossover_mask
 
 from functools import partial
 from pymoo.core.callback import Callback
@@ -72,10 +73,14 @@ def parse_args():
     parser.add_argument('--min_ones',                  type=int,    help='minimum number of active layers in each stage during sampling', default=1)
 
     # evolution
+    parser.add_argument('--evo_method',                type=str,    choices=['nsga2', 'nsga3'], help='the evolutionary multi-objective optimization algorithm', default='nsga2')
     parser.add_argument('--population_size',           type=int,    help='number of individuals in the population', default=50)
     parser.add_argument('--n_iter',                    type=int,    help='number of generations to run', default=50)
     parser.add_argument('--cross_p',                   type=float,  help='probability of crossover', default=0.95)
     parser.add_argument('--mut_p',                     type=float,  help='probability of mutation', default=0.1)
+    parser.add_argument('--mut_eta',                   type=float,  help='eta of mutation', default=1.0)
+    parser.add_argument('--p_bit',                     type=float,  help='probability of depth bit cross', default=0.5)
+    
 
     # Log and save
     parser.add_argument('--log_directory',             type=str,   help='directory to save checkpoints and summaries', default='')
@@ -132,6 +137,7 @@ def test_lat_mac(args, sample_config_list, gpu, ngpus):
         }
         multi_config.append(fps_config)
     
+    os.makedirs("tmp", exist_ok=True)
     fd, config_path = tempfile.mkstemp(dir="tmp", suffix=".json")
     with os.fdopen(fd, "w") as f:
         json.dump(multi_config , f)
@@ -259,17 +265,69 @@ def check_safe_correct(code, depth):
     return is_safe
 
 
+# class BlockUniformCrossover(Crossover):
+#     """
+#     Block‑wise partial Uniform crossover for 0/1 depth masks.
+#     """
+
+#     def __init__(self, depth: list[int], p_bit: float = 0.25, **kwargs):
+#         super().__init__(2, 2, **kwargs)
+#         self.depth = depth
+#         self.p_bit = p_bit
+#         self._depth_len = sum(depth)
+
+#     # --------------------------------------------------------------
+#     def _do(self, _, X: np.ndarray, **__):
+#         # X: (2, n_matings, depth_len)
+#         assert X.shape[0] == 2 and X.shape[2] == self._depth_len, \
+#             "Expect shape (2, n_matings, depth_len)"
+
+#         n_matings = X.shape[1]
+#         # Split parents
+#         p0 = X[0]  # (n_matings, depth_len)
+#         p1 = X[1]
+
+#         # stage‑wise mask generation
+#         mask = np.empty_like(p0, dtype=bool)
+#         start = 0
+#         rng = np.random.rand
+#         for d in self.depth:
+#             mask[:, start:start+d] = rng(n_matings, d) < self.p_bit
+#             start += d
+
+#         child1 = np.where(mask, p1, p0)
+#         child2 = np.where(mask, p0, p1)
+
+#         return np.stack([child1, child2], axis=0)  # (2, n_matings, depth_len)
+    
+
+
+class PUniformCrossover(Crossover):
+
+    def __init__(self, p_bit=0.25, **kwargs):
+        super().__init__(2, 2, **kwargs)
+        self.p_bit = p_bit
+
+    def _do(self, _, X, **kwargs):
+        _, n_matings, n_var = X.shape
+        M = np.random.random((n_matings, n_var)) < self.p_bit
+        _X = crossover_mask(X, M)
+        return _X
+    
+
 class MixedCrossover(Crossover):
     '''
     A mixed crossover:
     1) two-point crossover on the front
     2) uniform crossover on the back
     '''
-    def __init__(self, depth, prob=0.9, **kwargs):
+    def __init__(self, depth, prob=0.9, p_bit=0.25, **kwargs):
         super().__init__(2, 2, prob=prob,**kwargs)
         self.depth = depth
         self.front_crossover = TwoPointCrossover()
-        self.back_crossover = UniformCrossover()
+        self.back_crossover = PUniformCrossover(p_bit=p_bit)
+        # self.back_crossover = BlockUniformCrossover(depth, p_bit=p_bit)
+        # self.back_crossover = UniformCrossover()
     
     def _do(self, _, X, **kwargs):
         # print(f'cross input X: {X}')
@@ -538,13 +596,26 @@ def main_worker(gpu, ngpus_per_node, args):
     eval_func = partial(online_eval, args=args, model=model, dataloader_eval=dataloader_eval, gpu=gpu, ngpus=ngpus_per_node, post_process=True, logger=logger)
     latency_func = partial(test_lat_mac, args=args, gpu=gpu, ngpus=ngpus_per_node)
     problem = NasProblem(eval_func=eval_func, latency_func=latency_func, search_sapce=ss, logger=logger)
-    logger_cb = EvolutionLogger(ss=ss, logger=logger, auto_save_path=args.log_directory)  # to solve GPU Memory error
-    method = NSGA2(
-        pop_size=args.population_size,  # initialize with current nd archs
-        sampling=SafeIntegerRandomSampling(depth=ss.depth),
-        crossover=MixedCrossover(depth=ss.depth, prob=args.cross_p),
-        mutation=MixedIntegerFromFloatMutation(depth=ss.depth, prob=args.mut_p, eta=1.0),
-        eliminate_duplicates=True)
+    logger_cb = EvolutionLogger(ss=ss, logger=logger, auto_save_path=args.log_directory)
+
+    if args.evo_method=='nsga2':
+        method = NSGA2(
+            pop_size=args.population_size,  # initialize with current nd archs
+            sampling=SafeIntegerRandomSampling(depth=ss.depth),
+            crossover=MixedCrossover(depth=ss.depth, prob=args.cross_p, p_bit=args.p_bit),
+            mutation=MixedIntegerFromFloatMutation(depth=ss.depth, prob=args.mut_p, eta=args.mut_eta),
+            eliminate_duplicates=True)
+    # elif args.evo_method=='nsga3':
+    #     from pymoo.algorithms.moo.nsga3 import NSGA3
+    #     from pymoo.util.ref_dirs import get_reference_directions
+    #     ref_dirs = get_reference_directions("das-dennis", 3, n_partitions=12)
+    #     method = NSGA3(
+    #         ref_dirs=ref_dirs,
+    #         pop_size=args.population_size,
+    #         sampling=SafeIntegerRandomSampling(depth=ss.depth),
+    #         crossover=MixedCrossover(depth=ss.depth, prob=args.cross_p),
+    #         mutation=MixedIntegerFromFloatMutation(depth=ss.depth, prob=args.mut_p, eta=1.0),
+    #         eliminate_duplicates=True)
 
     res = minimize(
         problem, method, termination=('n_gen', args.n_iter), save_history=False, callback=logger_cb, verbose=False, seed=1274395)
