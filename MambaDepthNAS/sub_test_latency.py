@@ -10,7 +10,7 @@ import time
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config_file", type=str, required=True)
-    parser.add_argument("--dataset", type=str, required=False, default='kitti')
+    parser.add_argument("--dataset", type=str, required=True)
     return parser.parse_args()
 
 @torch.no_grad()

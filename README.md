@@ -20,7 +20,7 @@ Using **Once-for-All Progressive Shrinking**
 
 2025/7/9 update SuperNet Fine-tuning(final)(Depth 01bit code, Script of whole run)
 
-2025/7/10 update SuperNet Fine-tuning(final)(Recover supernet depth to [2,4,8,4], Add run_script on nyu, Solve some bug)
+2025/7/10 update SuperNet Fine-tuning(final)(Recover supernet depth to [2,4,8,4], Add run_script on nyu, Solve some bugs)
 
 2025/7/15 update NAS Search(Optimize Abs_rel, Latency and MACs, Special corssover and mutation for mixed code, Check any stage is all zeros, Accelerate the verification process)
 
@@ -31,6 +31,8 @@ Using **Once-for-All Progressive Shrinking**
 2025/7/20 update Retrain(Only train by supernet)
 
 2025/7/23 update tools(Calculate HV, Visualized evolution curve)
+
+2025/7/31 update NAS Search(Parallel model validation, Mutil-GPUs latency test, Fix process hanging issue)
 
 ------
 
@@ -89,9 +91,10 @@ sh whole_run_kitti.sh
     - [x] open batch size > 1 for val
     - [x] use subprocess to test latency
     - [x] save_history set False to solve abnormal increase in GPU memory (add EvolutionLogger to replace)
-    - [ ] parallel evaluation
+    - [x] parallel evaluation(25% speed up or 60% speed up without persistent_workers)
     - [x] add GIFs images that display the evolutionary trajectory
     - [x] add method NSGA-III
+    - [x] mutil-GPU latency test(the number of GPUs speed up)
 - [ ] Retrain
     - [x] build selected network by searched arch code
     - [ ] load and map weight from supernet

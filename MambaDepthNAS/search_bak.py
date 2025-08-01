@@ -30,10 +30,6 @@ from pymoo.util.misc import crossover_mask
 from functools import partial
 from pymoo.core.callback import Callback
 import pandas as pd
-from typing import Dict, List, Tuple
-
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from itertools import cycle
 
 from utils import post_process_depth, flip_lr, compute_errors, eval_metrics, \
                        convert_arg_line_to_args, get_root_logger, unwrap_model, str2list, is_main_process, compute_metrics
@@ -52,9 +48,6 @@ Note: latency tests included; avoid running other GPU tasks.
 ### final
 # python MambaDepthNAS/search.py configs/search/search_kitti.txt 
 # python MambaDepthNAS/search.py configs/search/search_nyu.txt 
-
-### clear
-# echo quit | nvidia-cuda-mps-control
 
 def parse_args():
     parser = argparse.ArgumentParser(description='MambaDepth PyTorch implementation.', fromfile_prefix_chars='@')
@@ -80,6 +73,7 @@ def parse_args():
     parser.add_argument('--min_ones',                  type=int,    help='minimum number of active layers in each stage during sampling', default=1)
 
     # evolution
+    parser.add_argument('--evo_method',                type=str,    choices=['nsga2', 'nsga3'], help='the evolutionary multi-objective optimization algorithm', default='nsga2')
     parser.add_argument('--population_size',           type=int,    help='number of individuals in the population', default=50)
     parser.add_argument('--n_iter',                    type=int,    help='number of generations to run', default=50)
     parser.add_argument('--cross_p',                   type=float,  help='probability of crossover', default=0.95)
@@ -99,11 +93,8 @@ def parse_args():
     parser.add_argument('--use_right',                             help='if set, will randomly use right images when train on KITTI', action='store_true')
 
     # Multi-gpu training
-    parser.add_argument('--model_batch',               type=int,   help='number of models per process to eval', default=3)
-    parser.add_argument('--concurrency',               type=int,   help='number of process per GPU to use for eval', default=4)
-    parser.add_argument('--num_threads_val',           type=int,   help='number of threads to use for data loading', default=1)
-    parser.add_argument('--persistent_workers',                    help='if set the data loader will not shut down the worker processes after a dataset has been consumed once', action='store_true')
-    parser.add_argument('--fork',                                  help='multiprocessing_context=torch.multiprocessing.get_context("fork")',  action='store_true')
+    parser.add_argument('--num_threads_val',               type=int,   help='number of threads to use for data loading', default=1)
+    parser.add_argument('--persistent_workers',        action='store_true',   help='if set the data loader will not shut down the worker processes after a dataset has been consumed once')
     parser.add_argument('--world_size',                type=int,   help='number of nodes for distributed training', default=1)
     parser.add_argument('--rank',                      type=int,   help='node rank for distributed training', default=0)
     parser.add_argument('--dist_url',                  type=str,   help='url used to set up distributed training', default='tcp://127.0.0.1:1234')
@@ -132,89 +123,9 @@ def parse_args():
     
     return args
 
-def _spawn_one_gpu(idx_chunk, cfg_chunk, gpu_id, dataset):
-    """
-    写临时文件 → 调 sub_test_latency.py → 返回 [(arch_idx, latency, macs), ...]
-    """
-    fd, path = tempfile.mkstemp(dir="tmp", suffix=f"_GPU{gpu_id}.json")
-    with os.fdopen(fd, "w") as f:
-        json.dump(cfg_chunk, f)
-
-    try:
-        res = subprocess.run(
-            ["python", "MambaDepthNAS/sub_test_latency.py",
-             "--config_file", path,
-             "--dataset", dataset],
-            capture_output=True, text=True, check=True, timeout=500,
-            env={**os.environ,
-                 "OMP_NUM_THREADS": "1",
-                 "MKL_NUM_THREADS": "1",
-                 "CUDA_VISIBLE_DEVICES": gpu_id}
-        )
-        metrics = json.loads(res.stdout)
-        # concate idx
-        return [(i, m["latency"], m["macs"]) for i, m in zip(idx_chunk, metrics)]
-    
-    except subprocess.CalledProcessError as e:
-        print("Child process failed!")
-        print("Return code:", e.returncode)
-        print("STDOUT:", e.stdout)
-        print("STDERR:", e.stderr)
-        raise
-
-    finally:
-        if os.path.exists(path):
-            os.remove(path)
 
 
-def test_lat_mac_mutil(dataset, sample_config_list, gpu_arg="0,1,2,3"):
-
-    if isinstance(gpu_arg, str):  # → ['0','1','2','3']
-        gpus = [s.strip() for s in gpu_arg.split(',') if s.strip() != '']
-    elif isinstance(gpu_arg, (list, tuple)):
-        gpus = [str(x) for x in gpu_arg]
-    else:
-        raise ValueError("gpu_list should be str or list/tuple")
-    
-    G = len(gpus) 
-
-    if not os.path.exists("tmp"):
-        os.mkdir("tmp")
-
-    pre_cfgs = []
-    for raw in sample_config_list:
-        pre_cfgs.append({
-            "mlp_ratio":  raw["mlp_ratio"],
-            "d_state":    raw["d_state"] + [-1],
-            "ssd_expand": raw["expand"]  + [-1],
-            "depth": [int(sum(d)) for d in raw["depth"]],
-        })
-    
-    idx_chunks, cfg_chunks = [[] for _ in gpus], [[] for _ in gpus]
-    for idx, (cfg, gpu_id) in enumerate(zip(pre_cfgs, cycle(range(G)))):
-        idx_chunks[gpu_id].append(idx)
-        cfg_chunks[gpu_id].append(cfg)
-
-    latency_out = [None] * len(sample_config_list)
-    macs_out    = [None] * len(sample_config_list)
-
-    with ThreadPoolExecutor(max_workers=G) as pool:
-        futs = []
-        for gid, (idx_chunk, cfg_chunk) in enumerate(zip(idx_chunks, cfg_chunks)):
-            if not idx_chunk:   
-                continue
-            fut = pool.submit(_spawn_one_gpu,
-                              idx_chunk, cfg_chunk, gpus[gid], dataset)
-            futs.append(fut)
-
-        for fut in as_completed(futs):
-            for arch_idx, lat, mac in fut.result():
-                latency_out[arch_idx] = lat
-                macs_out[arch_idx]    = mac
-
-    return latency_out, macs_out
-
-def test_lat_mac(dataset, sample_config_list, gpu):
+def test_lat_mac(args, sample_config_list, gpu, ngpus):
     ### latency
     multi_config  = []
     for sample_config in sample_config_list:
@@ -235,17 +146,16 @@ def test_lat_mac(dataset, sample_config_list, gpu):
             [
                 "python", "MambaDepthNAS/sub_test_latency.py",
                 "--config_file", config_path,
-                "--dataset", dataset
+                "--dataset", args.dataset
             ],
             capture_output=True,
             text=True,
             check=True,
-            timeout=500,
             env={
                 **os.environ,
                 "OMP_NUM_THREADS": "1",
                 "MKL_NUM_THREADS": "1",
-                "CUDA_VISIBLE_DEVICES": gpu}
+                "CUDA_VISIBLE_DEVICES": args.devices.split(',')[gpu]}
         )
     except subprocess.CalledProcessError as e:
         print("Child process failed!")
@@ -260,12 +170,62 @@ def test_lat_mac(dataset, sample_config_list, gpu):
             # print(f"[INFO] Deleted temp config file: {config_path}")
 
     metrics_list = json.loads(result.stdout)
+    other_tensor = torch.tensor(
+        [[m["latency"], m["macs"], m["params"]] for m in metrics_list],
+        device=gpu
+    )
 
-    latency_list = [m["latency"] for m in metrics_list]
-    macs_list    = [m["macs"]    for m in metrics_list]
-    # params_list  = [m["params"]    for m in metrics_list]
+    if args.multiprocessing_distributed:
+        dist.all_reduce(tensor=other_tensor, op=dist.ReduceOp.SUM)
+
+    other_tensor /= ngpus
+
+    latency_list = other_tensor[:, 0].cpu().tolist()
+    macs_list    = other_tensor[:, 1].cpu().tolist()
+    # params_list = other_tensor[:, 2].cpu().tolist()
+
+    # latency, macs_g, params_m = (other_tensor / ngpus).cpu().numpy()
 
     return latency_list, macs_list
+
+
+@torch.no_grad()
+def online_eval(args, model, dataloader_eval, gpu, ngpus, post_process=False, logger=None, sample_config=None):
+    ### performance
+    eval_measures = torch.zeros(10).cuda(device=gpu)
+    for _, eval_sample_batched in enumerate(tqdm(dataloader_eval.data)):
+        image    = eval_sample_batched['image'].cuda(gpu, non_blocking=True)
+        gt_depth = eval_sample_batched['depth'].cuda(gpu, non_blocking=True)
+        # if not eval_sample_batched['has_valid_depth']:
+        #     # print('Invalid depth. continue.')
+        #     continue
+
+        model_module = unwrap_model(model)
+        model_module.backbone.set_sample_config(sample_config=sample_config)
+
+        pred_depth = model(image)
+        if post_process:
+            image_flipped = flip_lr(image)
+            pred_depth_flipped = model(image_flipped)
+            pred_depth = post_process_depth(pred_depth, pred_depth_flipped)
+
+        # update eval measures
+        for gt_d, pr_d in zip(gt_depth, pred_depth):
+            measures = compute_metrics(gt_d, pr_d, args)
+            eval_measures[:9] += torch.tensor(measures).cuda(device=gpu)
+            eval_measures[9] += 1
+        # break  # TODO
+
+    if args.multiprocessing_distributed:
+        # group = dist.new_group([i for i in range(ngpus)])
+        dist.all_reduce(tensor=eval_measures, op=dist.ReduceOp.SUM)
+
+    eval_measures_cpu = eval_measures.cpu()
+    cnt = eval_measures_cpu[9].item()
+    eval_measures_cpu /= cnt
+    abs_rel = eval_measures_cpu[1]
+
+    return abs_rel
 
 
 def has_empty_stage(depth_list):
@@ -306,7 +266,7 @@ def check_safe_correct(code, depth):
 
 class PUniformCrossover(Crossover):
 
-    def __init__(self, p_bit=0.5, **kwargs):
+    def __init__(self, p_bit=0.25, **kwargs):
         super().__init__(2, 2, **kwargs)
         self.p_bit = p_bit
 
@@ -323,11 +283,12 @@ class MixedCrossover(Crossover):
     1) two-point crossover on the front
     2) uniform crossover on the back
     '''
-    def __init__(self, depth, prob=0.9, p_bit=0.5, **kwargs):
+    def __init__(self, depth, prob=0.9, p_bit=0.25, **kwargs):
         super().__init__(2, 2, prob=prob,**kwargs)
         self.depth = depth
         self.front_crossover = TwoPointCrossover()
         self.back_crossover = PUniformCrossover(p_bit=p_bit)
+        # self.back_crossover = BlockUniformCrossover(depth, p_bit=p_bit)
         # self.back_crossover = UniformCrossover()
     
     def _do(self, _, X, **kwargs):
@@ -417,109 +378,17 @@ class SafeIntegerRandomSampling(IntegerRandomSampling):
         return np.vstack(samples)
 
 
-class JointModel(nn.Module):
-    """Wrap a list of sub‑models so *one* forward pass yields a list of outputs.
-
-    • 训练阶段:  forward 合并 → backward 逐模型，梯度互不干扰。
-    • 推理阶段:  一次 forward 拿全部输出，吞掉 Python/kernel 开销。
-    """
-
-    def __init__(self, models: List[nn.Module]):
-        super().__init__()
-        self.models = nn.ModuleList(models)
-
-    def forward(self, x: torch.Tensor) -> List[torch.Tensor]:
-        return [m(x) for m in self.models]
-
-
-def worker_main_eval_func(task_q, result_q, args):
-    """ evaluates sub‑networks in parallel """
-    if not torch.cuda.is_available():
-        raise RuntimeError("CUDA device not available. Please check your GPU or CUDA installation.")
-    device = torch.device("cuda")
-    dataloader_eval = NewDataLoader(args, 'online_eval')
-
-    if args.ckpt_path:
-        if os.path.isfile(args.ckpt_path):
-            key = 'model'
-            _ckpt = torch.load(open(args.ckpt_path, "rb"), map_location=torch.device("cpu"))
-            state_dict = {k.replace('module.', '', 1): v for k, v in _ckpt[key].items()}
-            print("Loading checkpoint {} from {} (global_step {})".format(args.ckpt_path, key, _ckpt['global_step']))
-        else:
-            raise RuntimeError(f"Checkpoint path does not exist: {args.ckpt_path}")
-    
-    models: List[nn.Module] = []
-
-    while True:
-        task: Tuple[int, List[Dict]] = task_q.get()
-        if task is None:
-            break  # poison‑pill → terminate
-        start_idx, tokens = task
-        n = len(tokens)
-
-        if not models:
-            for _ in range(n):
-                m = MambaDepth(args, version=args.encoder, max_depth=args.max_depth).to(device)
-                incompatibleKeys = m.load_state_dict(state_dict, strict=False)
-                print("== missing_keys: {}".format(incompatibleKeys))
-                models.append(m)
-
-        for gene, m in zip(tokens, models):
-            model_module = unwrap_model(m)
-            model_module.backbone.set_sample_config(sample_config=gene)
-
-        joint_model = JointModel(models).to(device)
-        joint_model.eval()
-
-        with torch.no_grad():
-            eval_measures = torch.zeros((n, 10), device=device)
-            for _, eval_sample_batched in enumerate(tqdm(dataloader_eval.data)):
-                image    = eval_sample_batched['image'].to(device, non_blocking=True)
-                gt_depth = eval_sample_batched['depth'].to(device, non_blocking=True)
-
-                pred_depth = joint_model(image)
-                post_process = True
-                if post_process:
-                    image_flipped = flip_lr(image)
-                    pred_depth_flipped = joint_model(image_flipped)
-                    for i in range(n):
-                        pred_depth[i] = post_process_depth(pred_depth[i], pred_depth_flipped[i])
-
-                # update eval measures
-                for i in range(n):
-                    for gt_d, pr_d in zip(gt_depth, pred_depth[i]):
-                        measures = compute_metrics(gt_d, pr_d, args)
-                        eval_measures[i][:9] += torch.tensor(measures).to(device=device)
-                        eval_measures[i][9] += 1
-
-            eval_measures_cpu = eval_measures.cpu()
-            cnts = eval_measures_cpu[:, 9].clamp(min=1).unsqueeze(1)
-            eval_measures_cpu[:, :9] /= cnts
-            abs_rel = eval_measures_cpu[:, 1]
-        
-        result_q.put((start_idx, abs_rel))
-        torch.cuda.empty_cache()
-    
-    torch.cuda.empty_cache()
-
-
 class NasProblem(Problem):
-    def __init__(self, latency_func, search_sapce,
-                  gpus: int | str,
-                  concurrency: int,
-                  batch: int,
-                  logger=None,
-                  w_args=None):
-        self.worker_eval_func = worker_main_eval_func
+    def __init__(self, eval_func, latency_func, search_sapce, logger=None):
+        self.eval_func = eval_func
         self.latency_func = latency_func
         self.ss = search_sapce
-        self.batch = batch
         self.logger = logger
         self.generation_id = 1
         super().__init__(n_var=28, n_obj=3, n_constr=0,  # 变量数，目标数，约束数
                          type_var=np.int32)
         
-        self.xl = np.zeros(self.n_var)
+        self.xl = np.zeros(self.n_var)  # TODO close_depth
         self.xu = np.array(
                         [len(self.ss.mlp_ratio) - 1] * self.ss.num_stages +
                         [len(self.ss.d_state) - 1] * (self.ss.num_stages - 1) +
@@ -527,77 +396,41 @@ class NasProblem(Problem):
                         [1] * sum(self.ss.depth) ,
                         dtype=np.int32
                     )
-        
-        # Worker
-        gpus_list = [str(gpus)] if isinstance(gpus, int) else [str(g) for g in
-                                                               (gpus if isinstance(gpus, list) else gpus.split(',')) if
-                                                               g]
-        gpus_list = gpus_list or ['']
-        num_workers = len(gpus_list) * concurrency
-        self.task_q, self.result_q = mp.Queue(), mp.Queue()
-
-        self.workers = []
-        for i in range(num_workers):
-            os.environ['CUDA_VISIBLE_DEVICES'] = gpus_list[i % len(gpus_list)]
-            p = mp.Process(target=self.worker_eval_func, args=(self.task_q, self.result_q, w_args))
-            p.start()
-            self.workers.append(p)
-
-    def exit_worker(self):
-        for _ in self.workers:
-            try:
-                self.task_q.put_nowait(None)
-            except Exception:
-                pass  # queue is closed
-
-        # 关闭队列，回收线程
-        try:
-            self.task_q.close();  self.task_q.join_thread()
-            self.result_q.close(); self.result_q.join_thread()
-        except (AttributeError, ValueError):
-            pass
-
-        # terminate if wait for long time
-        for p in self.workers:
-            p.join(timeout=5)
-            if p.is_alive():
-                p.terminate(); p.join()
-
-        self.workers.clear()
+        # print(f'xl: {self.xl}')
+        # print(f'xu: {self.xu}')
 
     def _evaluate(self, x, out, *args, **kwargs):
         f = np.full((x.shape[0], self.n_obj), np.nan)
         # 假设 predictor 的 predict 方法接受一个二维数组，每行一个架构编码，返回对应的性能指标
-        sample_config_list = [self.ss.decode(_x) for _x in x]
-        eval_s_time = time.time()
-        n = x.shape[0]
-        for start in range(0, n, self.batch):
-            self.task_q.put((start, sample_config_list[start: start + self.batch]))
+        abs_rel_list = []
+        latency_list = []
+        macs_list = []
+        sample_config_list = []
 
-        abs_rel_list = [None] * n
-        num_batches = (n + self.batch - 1) // self.batch
-        for _ in range(num_batches):
-            start_idx, objs_batch = self.result_q.get()
-            abs_rel_list[start_idx: start_idx + len(objs_batch)] = objs_batch
+        # eval_s_time = time.time()
+        for _x in x:
+            # print('_x:', _x)
+            sample_config = self.ss.decode(_x)
+            sample_config_list.append(sample_config)
 
-        eval_cost_time = time.time() - eval_s_time
-        lat_s_time = time.time()
-
+            # print('_x after decode:',sample_config)
+            abs_rel = self.eval_func(sample_config=sample_config)
+            abs_rel_list.append(abs_rel)
+        # eval_cost_time = time.time() - eval_s_time
+        # print(f'eval_cost_time: {eval_cost_time:.2f}s')
+        # lat_s_time = time.time()
         latency_list, macs_list = self.latency_func(sample_config_list=sample_config_list)
-        lat_cost_time = time.time() - lat_s_time
+        # lat_cost_time = time.time() - lat_s_time
+        # print(f'lat_cost_time: {lat_cost_time:.2f}s')
+        # assert False,'debug'
 
-        abs_rounded = [round(float(abs), 4) for abs in abs_rel_list]
-        lat_rounded = [round(float(lat), 4) for lat in latency_list]
-        mac_rounded = [round(float(mac), 4) for mac in macs_list]
-        self.logger.info(f"pop_abs_rel = {abs_rounded}")
-        self.logger.info(f"pop_latency = {lat_rounded}")
-        self.logger.info(f"pop_mac_g = {mac_rounded}")
-
-        gen = self.generation_id
-        self.generation_id += 1
-
-        self.logger.info(f'[Gen {gen}] eval_cost_time: {eval_cost_time:.2f}s')
-        self.logger.info(f'[Gen {gen}] lat_cost_time: {lat_cost_time:.2f}s')
+        if is_main_process():
+            abs_rounded = [round(float(abs), 4) for abs in abs_rel_list]
+            lat_rounded = [round(float(lat), 4) for lat in latency_list]
+            mac_rounded = [round(float(mac), 4) for mac in macs_list]
+            self.logger.info(f"pop_abs_rel = {abs_rounded}")
+            self.logger.info(f"pop_latency = {lat_rounded}")
+            self.logger.info(f"pop_mac_g = {mac_rounded}")
 
         for i, (_x, abs, lat, mac) in enumerate(zip(x, abs_rel_list, latency_list, macs_list)):
             f[i, 0] = abs
@@ -605,14 +438,18 @@ class NasProblem(Problem):
             f[i, 2] = mac
 
         out["F"] = f
-        
-        abs_rel_np = np.array(abs_rel_list, dtype=np.float32)
-        latency_np = np.array(latency_list, dtype=np.float32)
-        macs_np    = np.array(macs_list, dtype=np.float32)
 
-        self.logger.info(f"[Gen {gen}] (New_Pop) abs_rel: mean={abs_rel_np.mean():.4f}, min={abs_rel_np.min():.4f}, max={abs_rel_np.max():.4f}")
-        self.logger.info(f"[Gen {gen}] (New_Pop) latency: mean={latency_np.mean():.4f}, min={latency_np.min():.4f}, max={latency_np.max():.4f}")
-        self.logger.info(f"[Gen {gen}] (New_Pop) macs_g: mean={macs_np.mean():.4f}, min={macs_np.min():.4f}, max={macs_np.max():.4f}")
+        if is_main_process():
+            gen = self.generation_id
+            self.generation_id += 1
+
+            abs_rel_np = np.array(abs_rel_list, dtype=np.float32)
+            latency_np = np.array(latency_list, dtype=np.float32)
+            macs_np    = np.array(macs_list, dtype=np.float32)
+
+            self.logger.info(f"[Gen {gen}] (New_Pop) abs_rel: mean={abs_rel_np.mean():.4f}, min={abs_rel_np.min():.4f}, max={abs_rel_np.max():.4f}")
+            self.logger.info(f"[Gen {gen}] (New_Pop) latency: mean={latency_np.mean():.4f}, min={latency_np.min():.4f}, max={latency_np.max():.4f}")
+            self.logger.info(f"[Gen {gen}] (New_Pop) macs_g: mean={macs_np.mean():.4f}, min={macs_np.min():.4f}, max={macs_np.max():.4f}")
 
 
 class EvolutionLogger(Callback):
@@ -660,29 +497,129 @@ class EvolutionLogger(Callback):
         df_pop.to_csv(f"{save_path}/pop.csv", index=False)
 
 
+def main_worker(gpu, ngpus_per_node, args):
+    args.gpu = gpu
 
-def start_mps():
-    os.environ["CUDA_MPS_PIPE_DIRECTORY"] = "/tmp/nvidia-mps"
-    os.environ["CUDA_MPS_LOG_DIRECTORY"] = "/tmp/nvidia-log"
-    subprocess.run(["pkill", "-9", "nvidia-cuda-mps-control"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    time.sleep(1)
-    try:
-        subprocess.run(["nvidia-cuda-mps-control", "-d"], check=True)
-        print("[MPS] Started successfully", flush=True)
-    except Exception as e:
-        print(f"[MPS] Failed: {e}", flush=True)
+    if args.distributed:
+        if args.dist_url == "env://" and args.rank == -1:
+            args.rank = int(os.environ["RANK"])
+        if args.multiprocessing_distributed:
+            args.rank = args.rank * ngpus_per_node + gpu
+        dist.init_process_group(backend=args.dist_backend, init_method=args.dist_url, world_size=args.world_size, rank=args.rank)
+
+    # get logger after init DDP
+    logger = get_root_logger(args.log_directory)
+
+    if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
+        logger.info('args: '+str(args))
+
+    # MambaDepth model
+    model = MambaDepth(args, version=args.encoder, inv_depth=False, max_depth=args.max_depth, pretrained=None)
+
+    model.train()
+
+    # print model params    
+    if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
+        num_params = sum([np.prod(p.size()) for p in model.parameters()])
+        logger.info("== Total number of parameters: {}".format(num_params))
+
+        num_params_update = sum([np.prod(p.shape) for p in model.parameters() if p.requires_grad])
+        logger.info("== Total number of learning parameters: {}".format(num_params_update))
+
+    if args.distributed:
+        if args.gpu is not None:
+            torch.cuda.set_device(args.gpu)
+            model.cuda(args.gpu)
+            model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=True)
+        else:
+            model.cuda()
+            model = torch.nn.parallel.DistributedDataParallel(model, find_unused_parameters=True)
+    else:
+        raise ValueError("Distributed training is not enabled. Please set --distributed flag.")
+
+    # loading supernet weight
+    if args.ckpt_path:
+        if os.path.isfile(args.ckpt_path):
+            key = 'model'
+            _ckpt = torch.load(open(args.ckpt_path, "rb"), map_location=torch.device("cpu"))
+            logger.info("Loading checkpoint {} from {} (global_step {})".format(args.ckpt_path, key, _ckpt['global_step']))
+            # new_state_dict = expand_depth(_ckpt[key], self.state_dict())  # Expand depth of the pretrained weight
+            incompatibleKeys = model.load_state_dict(_ckpt[key], strict=False)
+            logger.info("== missing_keys: {}".format(incompatibleKeys))
+            del _ckpt
+        else:
+            raise RuntimeError(f"Checkpoint path does not exist: {args.ckpt_path}")
+
+    cudnn.benchmark = True
+    dataloader_eval = NewDataLoader(args, 'online_eval')
+
+    ### seach space
+    ss = MambaSearchSpace(args.mlp_ratio, args.d_state, args.ssd_expand, open_depth=args.open_depth)
+
+    ### evolution
+    model.eval()
+    if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
+        logger.info(f"==> Starting evolution...")
+    
+    eval_func = partial(online_eval, args=args, model=model, dataloader_eval=dataloader_eval, gpu=gpu, ngpus=ngpus_per_node, post_process=True, logger=logger)
+    latency_func = partial(test_lat_mac, args=args, gpu=gpu, ngpus=ngpus_per_node)
+    problem = NasProblem(eval_func=eval_func, latency_func=latency_func, search_sapce=ss, logger=logger)
+    logger_cb = EvolutionLogger(ss=ss, logger=logger, auto_save_path=args.log_directory)
+
+    if args.evo_method=='nsga2':
+        method = NSGA2(
+            pop_size=args.population_size,  # initialize with current nd archs
+            sampling=SafeIntegerRandomSampling(depth=ss.depth),
+            crossover=MixedCrossover(depth=ss.depth, prob=args.cross_p, p_bit=args.p_bit),
+            mutation=MixedIntegerFromFloatMutation(depth=ss.depth, prob=args.mut_p, eta=args.mut_eta),
+            eliminate_duplicates=True)
+    # elif args.evo_method=='nsga3':
+    #     from pymoo.algorithms.moo.nsga3 import NSGA3
+    #     from pymoo.util.ref_dirs import get_reference_directions
+    #     ref_dirs = get_reference_directions("das-dennis", 3, n_partitions=12)
+    #     method = NSGA3(
+    #         ref_dirs=ref_dirs,
+    #         pop_size=args.population_size,
+    #         sampling=SafeIntegerRandomSampling(depth=ss.depth),
+    #         crossover=MixedCrossover(depth=ss.depth, prob=args.cross_p),
+    #         mutation=MixedIntegerFromFloatMutation(depth=ss.depth, prob=args.mut_p, eta=1.0),
+    #         eliminate_duplicates=True)
+
+    res = minimize(
+        problem, method, termination=('n_gen', args.n_iter), save_history=False, callback=logger_cb, verbose=False, seed=1274395)
+    
+    ### show results
+    if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
+        
+        # save all pop
+        logger_cb.save(save_path=args.log_directory)
+
+        # show best pop
+        optimal_solutions = res.X.tolist()
+        optimal_objective_values = res.F.tolist()
+
+        logger.info("==="*20)
+        logger.info("Optimal Code:")
+        logger.info(optimal_solutions)
+
+        logger.info("Optimal Objective Values:")
+        for id, val in enumerate(optimal_objective_values):
+            logger.info(f"id:{id}, abs_rel={val[0]:.4f}, latency={val[1]:.1f}ms, MACs={val[2]:.1f}G")
+
+        logger.info("Optimal Config:")
+        for id, conf in enumerate(optimal_solutions):
+            logger.info(f"id:{id}, {ss.decode(conf)}")
+
+        logger.info(f"==> Finished evolution!")
 
 
 def main():
-    start_mps()
     args = parse_args()
     os.environ["CUDA_VISIBLE_DEVICES"]=args.devices
     os.environ["OMP_NUM_THREADS"] = "1"
     os.environ["MKL_NUM_THREADS"] = "1"
     os.environ["OPENBLAS_NUM_THREADS"] = "1"
     torch.set_num_threads(1)
-
-    args.distributed = False
 
     command = 'mkdir -p ' + os.path.join(args.log_directory, args.model_name)
     os.system(command)
@@ -691,74 +628,20 @@ def main():
     command = 'cp ' + sys.argv[1] + ' ' + args_out_path
     os.system(command)
 
-    # torch.cuda.empty_cache()
-    logger = get_root_logger(args.log_directory)
+    torch.cuda.empty_cache()
+    args.distributed = args.world_size > 1 or args.multiprocessing_distributed
 
-    # cudnn.benchmark = True
+    ngpus_per_node = torch.cuda.device_count()
+    if ngpus_per_node > 1 and not args.multiprocessing_distributed:
+        print("This machine has more than 1 gpu. Please specify --multiprocessing_distributed, or set \'CUDA_VISIBLE_DEVICES=0\'")
+        return -1
 
-    ### seach space
-    ss = MambaSearchSpace(args.mlp_ratio, args.d_state, args.ssd_expand, open_depth=args.open_depth)
-
-    ### evolution
-    logger.info(f"==> Starting evolution...")
-    
-    # latency_func = partial(test_lat_mac, dataset=args.dataset, gpu=args.devices.split(',')[0].strip())
-    latency_func = partial(test_lat_mac_mutil, dataset=args.dataset, gpu_arg=args.devices)
-    problem = NasProblem(
-        latency_func=latency_func,
-        search_sapce=ss, 
-        gpus=args.devices, 
-        concurrency=args.concurrency, 
-        batch=args.model_batch, 
-        logger=logger,
-        w_args=args
-    )
-    logger_cb = EvolutionLogger(
-        ss=ss, 
-        logger=logger, 
-        auto_save_path=args.log_directory
-    )  # to solve GPU Memory error
-    method = NSGA2(
-        pop_size=args.population_size,  # initialize with current nd archs
-        sampling=SafeIntegerRandomSampling(depth=ss.depth),
-        crossover=MixedCrossover(depth=ss.depth, prob=args.cross_p, p_bit=args.p_bit),
-        mutation=MixedIntegerFromFloatMutation(depth=ss.depth, prob=args.mut_p, eta=args.mut_eta),
-        eliminate_duplicates=True
-    )
-
-    res = minimize(
-        problem, 
-        method, 
-        termination=('n_gen', args.n_iter), 
-        save_history=False, 
-        callback=logger_cb, 
-        verbose=False, 
-        seed=1274395
-    )
-    
-    problem.exit_worker()
-
-    ### show results
-    logger_cb.save(save_path=args.log_directory)
-
-    optimal_solutions = res.X.tolist()
-    optimal_objective_values = res.F.tolist()
-
-    logger.info("==="*20)
-    logger.info("Optimal Code:")
-    logger.info(optimal_solutions)
-
-    logger.info("Optimal Objective Values:")
-    for id, val in enumerate(optimal_objective_values):
-        logger.info(f"id:{id}, abs_rel={val[0]:.4f}, latency={val[1]:.1f}ms, MACs={val[2]:.1f}G")
-
-    logger.info("Optimal Config:")
-    for id, conf in enumerate(optimal_solutions):
-        logger.info(f"id:{id}, {ss.decode(conf)}")
-
-    logger.info(f"==> Finished evolution!")
+    if args.multiprocessing_distributed:
+        args.world_size = ngpus_per_node * args.world_size
+        mp.spawn(main_worker, nprocs=ngpus_per_node, args=(ngpus_per_node, args))
+    else:
+        main_worker(args.gpu, ngpus_per_node, args)
 
 
 if __name__ == '__main__':
-    mp.set_start_method('spawn', force=True)
     main()

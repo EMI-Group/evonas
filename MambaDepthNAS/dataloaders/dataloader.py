@@ -47,12 +47,14 @@ class NewDataLoader(object):
                 self.eval_sampler = DistributedSamplerNoEvenlyDivisible(self.testing_samples, shuffle=False)
             else:
                 self.eval_sampler = None
+            use_fork = getattr(args, "fork", False)
             self.data = DataLoader(self.testing_samples, args.batch_size_val,
                                    shuffle=False,
                                    num_workers=args.num_threads_val,
                                    pin_memory=True,
                                    sampler=self.eval_sampler,
-                                   persistent_workers=args.persistent_workers
+                                   persistent_workers=args.persistent_workers,
+                                   multiprocessing_context=torch.multiprocessing.get_context("fork") if use_fork else None
                                    )
         
         elif mode == 'test':
