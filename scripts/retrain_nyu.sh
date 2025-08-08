@@ -12,9 +12,9 @@ python MambaDepthNAS/retrain.py "@${base_configs}" \
         --num_epochs ${num_epochs} \
         --warmup_epochs ${warmup_epochs} \
         --device ${device} \
-        --mlp_ratio "[0.5, 3.5, 4.0, 4.0]" \
-        --d_state "[64, 32, 64]" \
-        --ssd_expand "[3, 3, 4]" \
+        --mlp_ratio "[2.0, 3.5, 3.0, 3.0]" \
+        --d_state "[64, 48, 64]" \
+        --ssd_expand "[2, 3, 4]" \
         --depth "[[0, 1], [1, 0, 1, 0], [1, 1, 1, 1, 1, 1, 1, 0], [1, 0, 1, 0]]"
 
 sleep 3

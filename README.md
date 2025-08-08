@@ -97,7 +97,8 @@ sh whole_run_kitti.sh
     - [x] mutil-GPU latency test(the number of GPUs speed up)
 - [ ] Retrain
     - [x] build selected network by searched arch code
-    - [ ] load and map weight from supernet
+    - [ ] ~~load and map weight from supernet~~
+    - [ ] fixed dis_modules_s4 weight loading
 
 ------
 

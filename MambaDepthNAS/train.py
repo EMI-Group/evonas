@@ -254,9 +254,12 @@ def main_worker(gpu, ngpus_per_node, args):
         key = 'model'
         _ckpt = torch.load(open(args.ckpt_path, "rb"), map_location=torch.device("cpu"))
         logger.info("Successfully load whole ckpt {} from {}".format(args.ckpt_path, key))
-        # new_state_dict = expand_depth(_ckpt[key], self.state_dict())  # Expand depth of the pretrained weight
         incompatibleKeys = model.load_state_dict(_ckpt[key], strict=False)
         logger.info("== missing_keys: {}".format(incompatibleKeys))
+        key2 = 'distill_module'
+        if key2 in _ckpt and args.f_distill:  # Note!
+            dis_modules_s4.load_state_dict(_ckpt[key2])
+            logger.info("Successfully load distill_module ckpt {} from {}".format(args.ckpt_path, key2))
         del _ckpt
 
     if args.kd_ratio > 0:
@@ -490,7 +493,8 @@ def main_worker(gpu, ngpus_per_node, args):
                             print('New best for {}. Saving model: {}'.format(eval_metrics[i], model_save_name))
                             checkpoint = {'global_step': global_step,
                                           'model': model.state_dict(),
-                                          'optimizer': optimizer.state_dict(),
+                                        #   'optimizer': optimizer.state_dict(),
+                                          'distill_module': dis_modules_s4.state_dict(),  # Note!
                                           'best_eval_measures_higher_better': best_eval_measures_higher_better,
                                           'best_eval_measures_lower_better': best_eval_measures_lower_better,
                                           'best_eval_steps': best_eval_steps

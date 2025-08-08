@@ -410,3 +410,61 @@ def infer(model, images, **kwargs):
     # mean_pred = 0.5 * (pred1 + pred2)
 
     return pred1, mid_features
+
+
+def check_keywords_in_name(name, keywords=()):
+    isin = False
+    for keyword in keywords:
+        if keyword in name:
+            isin = True
+    return isin
+
+
+def set_weight_decay(model, skip_list=(), skip_keywords=()):
+    has_decay = []
+    no_decay = []
+    no_decay_names = []
+
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue  # frozen weights
+        if len(param.shape) == 1 or name.endswith(".bias") or (name in skip_list) or \
+                check_keywords_in_name(name, skip_keywords):
+            no_decay.append(param)
+            no_decay_names.append(name)
+            # print(f"{name} has no weight decay")
+        else:
+            has_decay.append(param)
+    return [{'params': has_decay},
+            {'params': no_decay, 'weight_decay': 0.}], no_decay_names 
+
+def build_optimizer(args, model, logger, dis_modules_s4):
+    """
+    Build optimizer, set weight decay of normalization to 0 by default.
+    code from VSSD
+    """
+    logger.info(f"==============> building optimizer {args.optimizer}....................")
+    skip = {}
+    skip_keywords = {}
+    if hasattr(model, 'no_weight_decay'):
+        skip = model.no_weight_decay()
+    if hasattr(model, 'no_weight_decay_keywords'):
+        skip_keywords = model.no_weight_decay_keywords()
+    parameters, no_decay_names = set_weight_decay(model, skip, skip_keywords)
+    logger.info(f"No weight decay list: {no_decay_names}")
+    if dis_modules_s4 is not None:
+        parameters.append(
+            {'params': dis_modules_s4.parameters(), 'lr': args.fmd_learning_rate, 'weight_decay': 0.}
+        )
+
+    optimizer = None
+    if args.optimizer == 'sgd':
+        optimizer = torch.optim.SGD(parameters, momentum=0.9, nesterov=True,
+                              lr=args.learning_rate, weight_decay=args.weight_decay)
+    elif args.optimizer == 'adamw':
+        optimizer = torch.optim.AdamW(parameters,
+                                lr=args.learning_rate, weight_decay=args.weight_decay)
+    else:
+        raise NotImplementedError
+
+    return optimizer

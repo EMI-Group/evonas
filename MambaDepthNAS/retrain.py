@@ -20,7 +20,7 @@ from timm.scheduler.cosine_lr import CosineLRScheduler
 from tensorboardX import SummaryWriter
 
 from utils import post_process_depth, flip_lr, silog_loss, compute_errors, eval_metrics, \
-                       block_print, enable_print, normalize_result, inv_normalize, convert_arg_line_to_args, get_root_logger, unwrap_model, str2list, infer, compute_metrics
+                       block_print, enable_print, normalize_result, inv_normalize, convert_arg_line_to_args, get_root_logger, unwrap_model, str2list, infer, compute_metrics, build_optimizer
 from networks.model import MambaDepth
 from networks.VSSD.mamba_util import select_depth_from_supernet
 
@@ -59,6 +59,7 @@ def parse_args():
     parser.add_argument('--f_distill',                 action='store_true',   help='if set, will use mid feature distillation loss')
     parser.add_argument('--alpha_1',                   type=float, help='weight coefficient for spatial loss (spat_loss)', default=0.08)
     parser.add_argument('--alpha_2',                   type=float, help='weight coefficient for frequency loss (freq_loss)', default=0.06)
+    parser.add_argument('--fmd_learning_rate',         type=float, help='learning rate of FreqMaskingDistill model', default=1e-4)
 
     # Log and save
     parser.add_argument('--log_directory',             type=str,   help='directory to save checkpoints and summaries', default='')
@@ -210,6 +211,8 @@ def main_worker(gpu, ngpus_per_node, args):
                 softmax_scale=[5.,5.],
                 num_heads=16
             )
+        else:
+            dis_modules_s4 = None
 
     # print model params    
     if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
@@ -248,6 +251,10 @@ def main_worker(gpu, ngpus_per_node, args):
         # new_state_dict = select_depth_from_supernet(_ckpt[key], model.state_dict(), depth_mask=args.depth)  # Match depth of the pretrained weight
         incompatibleKeys = model.load_state_dict(_ckpt[key], strict=False)
         logger.info("== missing_keys: {}".format(incompatibleKeys))
+        key2 = 'distill_module'
+        if key2 in _ckpt and args.f_distill:  # Note!
+            dis_modules_s4.load_state_dict(_ckpt[key2])
+            logger.info("Successfully load distill_module ckpt {} from {}".format(args.ckpt_path, key2))
         del _ckpt
     
     model_module = unwrap_model(model)
@@ -294,24 +301,25 @@ def main_worker(gpu, ngpus_per_node, args):
     best_eval_steps = np.zeros(9, dtype=np.int32)
 
     # Training parameters
-    if args.optimizer == 'adamw':
-        backbone_params = list(model.module.backbone.parameters())
-        other_params = [p for n, p in model.module.named_parameters() if not n.startswith("backbone.")]
+    # if args.optimizer == 'adamw':
+    #     backbone_params = list(model.module.backbone.parameters())
+    #     other_params = [p for n, p in model.module.named_parameters() if not n.startswith("backbone.")]
 
-        param_groups = [
-            {'params': backbone_params, 'lr': args.learning_rate},
-            {'params': other_params,    'lr': args.learning_rate},
-        ]
-        if args.f_distill:
-            param_groups.append(
-                {'params': dis_modules_s4.parameters(), 'lr': args.learning_rate}
-            )
-        optimizer = torch.optim.AdamW(param_groups, weight_decay=args.weight_decay)  # TODO 可学习VSSD的权重衰减策略
-    elif args.optimizer == 'adam':
-        optimizer = torch.optim.Adam([{'params': model.module.parameters()}],
-                                lr=args.learning_rate)   
-    else:
-        raise ValueError("Unsupported optimizer: {}".format(args.optimizer))
+    #     param_groups = [
+    #         {'params': backbone_params, 'lr': args.learning_rate},
+    #         {'params': other_params,    'lr': args.learning_rate},
+    #     ]
+    #     if args.f_distill:
+    #         param_groups.append(
+    #             {'params': dis_modules_s4.parameters(), 'lr': args.fmd_learning_rate}
+    #         )
+    #     optimizer = torch.optim.AdamW(param_groups, weight_decay=args.weight_decay)  # TODO 可学习VSSD的权重衰减策略
+    # elif args.optimizer == 'adam':
+    #     optimizer = torch.optim.Adam([{'params': model.module.parameters()}],
+    #                             lr=args.learning_rate)   
+    # else:
+    #     raise ValueError("Unsupported optimizer: {}".format(args.optimizer))
+    optimizer = build_optimizer(args, model_module, logger, dis_modules_s4)
     
 
     cudnn.benchmark = True
@@ -475,7 +483,7 @@ def main_worker(gpu, ngpus_per_node, args):
                             print('New best for {}. Saving model: {}'.format(eval_metrics[i], model_save_name))
                             checkpoint = {'global_step': global_step,
                                           'model': model.state_dict(),
-                                          'optimizer': optimizer.state_dict(),
+                                        #   'optimizer': optimizer.state_dict(),
                                           'best_eval_measures_higher_better': best_eval_measures_higher_better,
                                           'best_eval_measures_lower_better': best_eval_measures_lower_better,
                                           'best_eval_steps': best_eval_steps
@@ -515,7 +523,7 @@ def main():
     os.system(command)
 
     args_out_path = os.path.join(args.log_directory, args.model_name)
-    command = 'cp ' + sys.argv[1][1:] + ' ' + args_out_path
+    command = 'cp ' + sys.argv[1] + ' ' + args_out_path
     os.system(command)
 
     torch.cuda.empty_cache()

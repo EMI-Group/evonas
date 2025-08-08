@@ -78,8 +78,8 @@ sleep 3
 # 07 depth (last)
 python MambaDepthNAS/train.py "@${base_configs}" \
         --ckpt_path ./runs/fine_tune_supernet_nyu/06_ssd_2/abs_rel_best_weight.pth \
-        --log_directory ./runs/fine_tune_supernet_nyu/07_depth/ \
-        --num_epochs 40 \
+        --log_directory ./runs/fine_tune_supernet_nyu/07_depth_2/ \
+        --num_epochs 25 \
         --warmup_epochs 1 \
         --d_state "[16, 32, 48, 64]" \
         --mlp_ratio "[0.5, 1.0, 2.0, 3.0, 3.5, 4.0]" \
