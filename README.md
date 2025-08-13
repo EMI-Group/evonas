@@ -34,6 +34,8 @@ Using **Once-for-All Progressive Shrinking**
 
 2025/7/31 update NAS Search(Parallel model validation, Mutil-GPUs latency test, Fix process hanging issue)
 
+2025/8/13 update Retrain(Support variable width)
+
 ------
 
 ##  Search Space
@@ -95,10 +97,10 @@ sh whole_run_kitti.sh
     - [x] add GIFs images that display the evolutionary trajectory
     - [x] add method NSGA-III
     - [x] mutil-GPU latency test(the number of GPUs speed up)
-- [ ] Retrain
+- [x] Retrain
     - [x] build selected network by searched arch code
     - [ ] ~~load and map weight from supernet~~
-    - [ ] fixed dis_modules_s4 weight loading
+    - [x] fixed dis_modules_s4 weight loading(not helpful)
 
 ------
 

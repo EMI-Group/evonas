@@ -21,8 +21,9 @@ from tensorboardX import SummaryWriter
 
 from utils import post_process_depth, flip_lr, silog_loss, compute_errors, eval_metrics, \
                        block_print, enable_print, normalize_result, inv_normalize, convert_arg_line_to_args, get_root_logger, unwrap_model, str2list, infer, compute_metrics, build_optimizer
-from networks.model import MambaDepth
+from networks.model import MambaDepth, make_divisible
 from networks.VSSD.mamba_util import select_depth_from_supernet
+from distillation.fmdv2 import FreqMaskingDistillLossv2
 
 '''fine-tune the final selected model'''
 
@@ -52,6 +53,7 @@ def parse_args():
     parser.add_argument('--d_state',                   type=str2list, default=[64,64,64,-1])
     parser.add_argument('--ssd_expand',                type=str2list, default=[4,4,4,-1])
     parser.add_argument('--depth',                     type=str2list, default=[2,4,8,4])
+    parser.add_argument('--width_multiplier',          type=float, help='factor to scale the number of channels in each layer (applies only to final model)', default=1.0)
 
     # Knowledge distillation
     parser.add_argument("--teacher_config",            type=str,   required=False)
@@ -183,36 +185,37 @@ def main_worker(gpu, ngpus_per_node, args):
         logger.info('args: '+str(args))
 
     # MambaDepth model
-    selected_config= {
+    final_config = {
         'mlp_ratio': args.mlp_ratio,
-        'd_state': args.d_state,
-        'expand': args.ssd_expand,
-        'depth': args.depth,
-    }
-    model = MambaDepth(args, version=args.encoder, max_depth=args.max_depth)
+        'd_state': args.d_state + [-1],
+        'ssd_expand': args.ssd_expand + [-1],
+        'depth': [sum(lst) for lst in args.depth],
+    } if args.encoder == 'VSSD_final' else None
+
+    model = MambaDepth(args, version=args.encoder, max_depth=args.max_depth, selected_config=final_config)
     model.train()
 
+    if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
+        logger.info('model: '+str(model))
+
     ### teacher model
-    if args.kd_ratio > 0:
+    if args.kd_ratio > 0 or args.f_distill:
         from networks.depthAny.builder import build_model
         t_config = Config.fromfile(args.teacher_config)
         teacher_model = build_model(t_config)  # include loading pretrained weight
 
-        if args.f_distill:
-            from distillation.fmdv2 import FreqMaskingDistillLossv2
-            dis_modules_s4 = FreqMaskingDistillLossv2(
-                alpha=[args.alpha_1, args.alpha_2],
-                student_dims=512,
-                teacher_dims=1024,
-                query_hw=(14,19),  # shape of tearcher feature 
-                pos_hw=(int(args.input_height/32), int(args.input_width/32)),  # shape of student feature 
-                pos_dims=1024,  # teacher feature dimension
-                self_query=True,
-                softmax_scale=[5.,5.],
-                num_heads=16
-            )
-        else:
-            dis_modules_s4 = None
+    dis_modules_s4 = FreqMaskingDistillLossv2(
+        alpha=[args.alpha_1, args.alpha_2],
+        student_dims=make_divisible(512 * args.width_multiplier),
+        teacher_dims=1024,
+        query_hw=(14,19),  # shape of tearcher feature 
+        pos_hw=(int(args.input_height/32), int(args.input_width/32)),  # shape of student feature 
+        pos_dims=1024,  # teacher feature dimension
+        self_query=True,
+        softmax_scale=[5.,5.],
+        num_heads=16
+    ) if args.f_distill else None
+
 
     # print model params    
     if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
@@ -232,15 +235,11 @@ def main_worker(gpu, ngpus_per_node, args):
                 teacher_model.cuda(args.gpu)
                 teacher_model = torch.nn.parallel.DistributedDataParallel(teacher_model, device_ids=[args.gpu], broadcast_buffers=False)
 
-                if args.f_distill: 
-                    dis_modules_s4.cuda(args.gpu)
-                    dis_modules_s4 = torch.nn.parallel.DistributedDataParallel(dis_modules_s4, device_ids=[args.gpu])
+            if args.f_distill: 
+                dis_modules_s4.cuda(args.gpu)
+                dis_modules_s4 = torch.nn.parallel.DistributedDataParallel(dis_modules_s4, device_ids=[args.gpu])
         else:
-            model.cuda()
-            model = torch.nn.parallel.DistributedDataParallel(model, find_unused_parameters=True)
-            if args.kd_ratio > 0:
-                teacher_model.cuda()
-                teacher_model = torch.nn.parallel.DistributedDataParallel(teacher_model, broadcast_buffers=False)
+            assert False,'developing'
     else:
         raise ValueError("Distributed training is not enabled. Please set --distributed flag.")
 
@@ -258,9 +257,16 @@ def main_worker(gpu, ngpus_per_node, args):
         del _ckpt
     
     model_module = unwrap_model(model)
-    model_module.backbone.set_sample_config(sample_config=selected_config)
+    if args.encoder == 'SuperNet':
+        selected_config = {
+            'mlp_ratio': args.mlp_ratio,
+            'd_state': args.d_state,
+            'expand': args.ssd_expand,
+            'depth': args.depth,
+        }
+        model_module.backbone.set_sample_config(sample_config=selected_config)
 
-    if args.kd_ratio > 0:
+    if args.kd_ratio > 0 or args.f_distill:
         teacher_model.eval()
         teacher_model.requires_grad_(False)
 
@@ -290,38 +296,13 @@ def main_worker(gpu, ngpus_per_node, args):
     #     #Alexnet FLOPs:4.2892 GFLOPS   MACs:2.1426 GMACs   Params:61.1008 M 
     # assert False, 'over'
 
-    if args.distributed:
-        logger.info("== Model Initialized on GPU: {}".format(args.gpu))
-    else:
-        logger.info("== Model Initialized")
-
     global_step = 0
     best_eval_measures_lower_better = torch.zeros(6).cpu() + 1e3
     best_eval_measures_higher_better = torch.zeros(3).cpu()
     best_eval_steps = np.zeros(9, dtype=np.int32)
 
-    # Training parameters
-    # if args.optimizer == 'adamw':
-    #     backbone_params = list(model.module.backbone.parameters())
-    #     other_params = [p for n, p in model.module.named_parameters() if not n.startswith("backbone.")]
-
-    #     param_groups = [
-    #         {'params': backbone_params, 'lr': args.learning_rate},
-    #         {'params': other_params,    'lr': args.learning_rate},
-    #     ]
-    #     if args.f_distill:
-    #         param_groups.append(
-    #             {'params': dis_modules_s4.parameters(), 'lr': args.fmd_learning_rate}
-    #         )
-    #     optimizer = torch.optim.AdamW(param_groups, weight_decay=args.weight_decay)  # TODO 可学习VSSD的权重衰减策略
-    # elif args.optimizer == 'adam':
-    #     optimizer = torch.optim.Adam([{'params': model.module.parameters()}],
-    #                             lr=args.learning_rate)   
-    # else:
-    #     raise ValueError("Unsupported optimizer: {}".format(args.optimizer))
     optimizer = build_optimizer(args, model_module, logger, dis_modules_s4)
     
-
     cudnn.benchmark = True
 
     dataloader = NewDataLoader(args, 'train')
@@ -361,8 +342,6 @@ def main_worker(gpu, ngpus_per_node, args):
     elif args.optimizer == 'adam':
         end_learning_rate = 0.1 * args.learning_rate
 
-    # ss = MambaSearchSpace(args.mlp_ratio, args.d_state, args.ssd_expand, open_depth=args.open_depth)
-
     # training
     while epoch < args.num_epochs:
         if args.distributed:
@@ -377,7 +356,7 @@ def main_worker(gpu, ngpus_per_node, args):
             image    = sample_batched['image'].cuda(args.gpu, non_blocking=True)
             depth_gt = sample_batched['depth'].cuda(args.gpu, non_blocking=True)
 
-            if args.kd_ratio > 0:
+            if args.kd_ratio > 0 or args.f_distill:
                 with torch.no_grad():
                     teacher_model.eval()
                     depth_tea, mid_feats_T = infer(teacher_model, image, dataset=args.dataset, focal=None)
@@ -396,7 +375,7 @@ def main_worker(gpu, ngpus_per_node, args):
 
                     spat_loss, freq_loss = dis_modules_s4(feat_S_s4, feat_T_s4)
 
-                if args.kd_ratio > 0:
+                if args.kd_ratio > 0 or args.f_distill:
                     kd_loss = silog_criterion.forward(depth_est, depth_tea, interpolate=True)
                     # print('loss', (1 - args.kd_ratio) * loss, 'kd_loss', args.kd_ratio * kd_loss, 'spat_loss', spat_loss, 'freq_loss', freq_loss)
                     loss = (1 - args.kd_ratio) * loss + args.kd_ratio * kd_loss + spat_loss + freq_loss

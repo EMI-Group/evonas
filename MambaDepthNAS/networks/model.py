@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from typing import Optional, Tuple, Union
 
 # from .mambaVision import Block, MambaVisionLayer
 # from .newcrf_layers import NewCRF
@@ -58,6 +59,7 @@ class MambaDepth(nn.Module):
 
         elif version == 'VSSD':
             from .VSSD.mamba2_fixed import Backbone_VMAMBA2_Fixed
+            '''fixed arch'''
             self.backbone = Backbone_VMAMBA2_Fixed(
                 image_size=(args.input_height, args.input_width),
                 patch_size=4,  # 无实际意义
@@ -86,11 +88,12 @@ class MambaDepth(nn.Module):
         
         elif version == 'VSSD_final':
             from .VSSD.mamba2_final import Backbone_VMAMBA2_Final
+            '''bulid one subset(not supernet) by config'''
             self.backbone = Backbone_VMAMBA2_Final(
                 image_size=(args.input_height, args.input_width),
                 patch_size=4,  # 无实际意义
                 in_chans=3,
-                embed_dim=64,
+                embed_dim=make_divisible(64 * args.width_multiplier),
                 depths=selected_config['depth'],
                 num_heads=[2, 4, 8, 16],
                 mlp_ratio=selected_config['mlp_ratio'],
@@ -111,6 +114,8 @@ class MambaDepth(nn.Module):
                 pretrained=pretrained
             )
             in_channels = [64, 128, 256, 512]
+            # scale channel
+            in_channels = [make_divisible(c * args.width_multiplier) for c in in_channels]
             
         elif version == 'MambaVision':
             from .mambaVision import Block, MambaVision
@@ -262,3 +267,18 @@ def upsample(x, scale_factor=2, mode="bilinear", align_corners=False):
     """Upsample input tensor by a factor of 2
     """
     return F.interpolate(x, scale_factor=scale_factor, mode=mode, align_corners=align_corners)
+
+
+def make_divisible(value: int, divisor: int = 8, min_value: Optional[int] = None) -> int:
+    """
+    Ensure that all layers have a channel count that is divisible by `divisor`. This function is taken from the
+    original TensorFlow repo. It can be seen here:
+    https://github.com/tensorflow/models/blob/master/research/slim/nets/mobilenet/mobilenet.py
+    """
+    if min_value is None:
+        min_value = divisor
+    new_value = max(min_value, int(value + divisor / 2) // divisor * divisor)
+    # Make sure that round down does not go down by more than 10%.
+    if new_value < 0.9 * value:
+        new_value += divisor
+    return int(new_value)
