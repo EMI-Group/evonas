@@ -24,6 +24,7 @@ from utils import post_process_depth, flip_lr, silog_loss, compute_errors, eval_
 from networks.model import MambaDepth, make_divisible
 from networks.VSSD.mamba_util import select_depth_from_supernet
 from distillation.fmdv2 import FreqMaskingDistillLossv2
+from torch.cuda.amp import autocast, GradScaler
 
 '''fine-tune the final selected model'''
 
@@ -80,7 +81,8 @@ def parse_args():
     parser.add_argument('--learning_rate',             type=float, help='initial learning rate', default=1e-4)
     parser.add_argument('--variance_focus',            type=float, help='lambda in paper: [0, 1], higher value more focus on minimizing variance of error', default=0.85)
     parser.add_argument('--max_norm',                  type=float, help='maximum norm for gradient clipping, (grad clip is not used if -1 or 0)', default=-1)
-    parser.add_argument('--optimizer',                 type=str,   help='optimizer to use, adam or adamw', default='adamw')
+    parser.add_argument('--optimizer',                 type=str,   help='optimizer to use, sgd or adamw', default='adamw')
+    parser.add_argument('--amp',                                   help='enable mixed precision (AMP)', action='store_true')
 
     # Preprocessing
     parser.add_argument('--do_random_rotate',                      help='if set, will perform random rotation for augmentation', action='store_true')
@@ -302,6 +304,7 @@ def main_worker(gpu, ngpus_per_node, args):
     best_eval_steps = np.zeros(9, dtype=np.int32)
 
     optimizer = build_optimizer(args, model_module, logger, dis_modules_s4)
+    scaler = GradScaler(device='cuda', enabled=args.amp)
     
     cudnn.benchmark = True
 
@@ -337,10 +340,8 @@ def main_worker(gpu, ngpus_per_node, args):
     warmup_steps = args.warmup_epochs * steps_per_epoch
     epoch = global_step // steps_per_epoch
 
-    if args.optimizer == 'adamw':
-        scheduler = CosineLRScheduler(optimizer, num_total_steps, t_mul=1., lr_min=args.min_lr, warmup_lr_init=args.warmup_lr, warmup_t=warmup_steps, cycle_limit=1, t_in_epochs=False, warmup_prefix=True)
-    elif args.optimizer == 'adam':
-        end_learning_rate = 0.1 * args.learning_rate
+    scheduler = CosineLRScheduler(optimizer, num_total_steps, t_mul=1., lr_min=args.min_lr, warmup_lr_init=args.warmup_lr, warmup_t=warmup_steps, cycle_limit=1, t_in_epochs=False, warmup_prefix=True)
+
 
     # training
     while epoch < args.num_epochs:
@@ -359,43 +360,54 @@ def main_worker(gpu, ngpus_per_node, args):
             if args.kd_ratio > 0 or args.f_distill:
                 with torch.no_grad():
                     teacher_model.eval()
-                    depth_tea, mid_feats_T = infer(teacher_model, image, dataset=args.dataset, focal=None)
+                    with autocast(device_type='cuda', dtype=torch.float16, enabled=args.amp):
+                        depth_tea, mid_feats_T = infer(teacher_model, image, dataset=args.dataset, focal=None)
 
             for _ in range(args.dynamic_batch_size):
-                depth_est, mid_feats_S = model(image, mid_features=True)
-                loss = silog_criterion.forward(depth_est, depth_gt)
+                with autocast(device_type='cuda', dtype=torch.float16, enabled=args.amp):
+                    '''note: if args.dynamic_batch_size > 0, you can set model.no_sync() to recude cost time'''
+                    depth_est, mid_feats_S = model(image, mid_features=True)
+                    loss = silog_criterion.forward(depth_est, depth_gt)
 
-                ### teacher model
-                spat_loss = torch.tensor(0.0).cuda(args.gpu)
-                freq_loss = torch.tensor(0.0).cuda(args.gpu)
-                kd_loss = torch.tensor(0.0).cuda(args.gpu)
-                if args.f_distill:
-                    feat_T_s4 = mid_feats_T[3]
-                    feat_S_s4 = mid_feats_S[3]
+                    ### teacher model
+                    spat_loss = torch.tensor(0.0).cuda(args.gpu)
+                    freq_loss = torch.tensor(0.0).cuda(args.gpu)
+                    kd_loss   = torch.tensor(0.0).cuda(args.gpu)
 
-                    spat_loss, freq_loss = dis_modules_s4(feat_S_s4, feat_T_s4)
+                    if args.f_distill:
+                        feat_T_s4 = mid_feats_T[3]
+                        feat_S_s4 = mid_feats_S[3]
 
-                if args.kd_ratio > 0 or args.f_distill:
-                    kd_loss = silog_criterion.forward(depth_est, depth_tea, interpolate=True)
-                    # print('loss', (1 - args.kd_ratio) * loss, 'kd_loss', args.kd_ratio * kd_loss, 'spat_loss', spat_loss, 'freq_loss', freq_loss)
-                    loss = (1 - args.kd_ratio) * loss + args.kd_ratio * kd_loss + spat_loss + freq_loss
-                
-                
-                loss = loss / args.dynamic_batch_size
-                loss.backward()
+                        spat_loss, freq_loss = dis_modules_s4(feat_S_s4, feat_T_s4)
 
-            if args.optimizer == 'adamw':
-                scheduler.step_update(epoch * steps_per_epoch + step)
-                current_lr = optimizer.param_groups[1]['lr']  # for decoder
-            elif args.optimizer == 'adam':
-                for param_group in optimizer.param_groups:
-                    current_lr = (args.learning_rate - end_learning_rate) * (1 - global_step / num_total_steps) ** 0.9 + end_learning_rate
-                    param_group['lr'] = current_lr
+                    if args.kd_ratio > 0 or args.f_distill:
+                        kd_loss = silog_criterion.forward(depth_est, depth_tea, interpolate=True)
+                        # print('loss', (1 - args.kd_ratio) * loss, 'kd_loss', args.kd_ratio * kd_loss, 'spat_loss', spat_loss, 'freq_loss', freq_loss)
+                        loss = (1 - args.kd_ratio) * loss + args.kd_ratio * kd_loss + spat_loss + freq_loss
+                    
+                    
+                    loss = loss / args.dynamic_batch_size
+
+                if args.amp:
+                    scaler.scale(loss).backward()
+                else:    
+                    loss.backward()
+
+            scheduler.step_update(epoch * steps_per_epoch + step)
+            current_lr = optimizer.param_groups[0]['lr']
+            current_lr_kd = optimizer.param_groups[1]['lr'] if args.f_distill else 0
 
             if args.max_norm > 0:
+                if args.amp:
+                    scaler.unscale_(optimizer)
                 grad_norm = nn.utils.clip_grad_norm_(model.parameters(), args.max_norm)
                 # print(f'grad norm: {grad_norm:.2f}')
-            optimizer.step()
+            
+            if args.amp:
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                optimizer.step()
 
             # show log and save result
             if global_step % 100 == 0:
@@ -422,6 +434,7 @@ def main_worker(gpu, ngpus_per_node, args):
                                                             and args.rank % ngpus_per_node == 0):
                     writer.add_scalar('silog_loss', loss.item(), global_step)
                     writer.add_scalar('learning_rate', current_lr, global_step)
+                    writer.add_scalar('learning_rate_kd', current_lr_kd, global_step)
                     writer.add_scalar('var_average', var_sum.item()/var_cnt, global_step)
                     depth_gt = torch.where(depth_gt < 1e-3, depth_gt * 0 + 1e3, depth_gt)
                     for i in range(num_log_images):

@@ -98,7 +98,7 @@ class MambaDepth(nn.Module):
                 num_heads=[2, 4, 8, 16],
                 mlp_ratio=selected_config['mlp_ratio'],
                 drop_rate=0.0,
-                drop_path_rate=0.2,
+                drop_path_rate=0.0,  # note!
                 simple_downsample=False,
                 simple_patch_embed=False,
                 ssd_expansion=selected_config['ssd_expand'],
