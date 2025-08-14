@@ -24,7 +24,7 @@ from utils import post_process_depth, flip_lr, silog_loss, compute_errors, eval_
 from networks.model import MambaDepth, make_divisible
 from networks.VSSD.mamba_util import select_depth_from_supernet
 from distillation.fmdv2 import FreqMaskingDistillLossv2
-from torch.cuda.amp import autocast, GradScaler
+from torch.amp import autocast, GradScaler
 
 '''fine-tune the final selected model'''
 
@@ -304,7 +304,7 @@ def main_worker(gpu, ngpus_per_node, args):
     best_eval_steps = np.zeros(9, dtype=np.int32)
 
     optimizer = build_optimizer(args, model_module, logger, dis_modules_s4)
-    scaler = GradScaler(device='cuda', enabled=args.amp)
+    scaler = GradScaler(enabled=args.amp)
     
     cudnn.benchmark = True
 
