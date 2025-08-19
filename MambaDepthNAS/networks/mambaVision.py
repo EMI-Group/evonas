@@ -688,7 +688,8 @@ class MambaVision(nn.Module):
         for level in self.levels:
             x = level(x)
             feats_list.append(x)
-        return x, feats_list
+        # return x, feats_list
+        return feats_list
 
     def _load_state_dict(self, 
                          pretrained, 

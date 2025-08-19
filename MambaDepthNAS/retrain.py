@@ -28,16 +28,18 @@ from torch.amp import autocast, GradScaler
 
 '''fine-tune the final selected model'''
 
-### final
+### (OFA-init under supernet model) 
 # python MambaDepthNAS/retrain.py configs/retrain_kitti.txt
+### (IN-init under subnet model)
+# python MambaDepthNAS/retrain.py configs/retrain/retrain_nyu_base.txt
 
 def parse_args():
     parser = argparse.ArgumentParser(description='MambaDepth PyTorch implementation.', fromfile_prefix_chars='@')
     parser.convert_arg_line_to_args = convert_arg_line_to_args
     
     parser.add_argument('--model_name',                type=str,   help='model name', default='MambaDepth')
-    parser.add_argument('--encoder',                   type=str,   help='type of encoder, base07, large07', default='SuperNet')
-    parser.add_argument('--pretrain',                  type=str,   help='path of pretrained encoder', default=None)
+    parser.add_argument('--encoder',                   type=str,   help='type of encoder, SuperNet, VSSD_final, tiny07', default='SuperNet')
+    parser.add_argument('--pretrained',                type=str,   help='path of pretrained encoder', default=None)
     parser.add_argument('--devices',                    type=str, default='0,1', help='CUDA_VISIBLE_DEVICES value, e.g., "0" or "0,1"')
 
     # Dataset
@@ -194,7 +196,7 @@ def main_worker(gpu, ngpus_per_node, args):
         'depth': [sum(lst) for lst in args.depth],
     } if args.encoder == 'VSSD_final' else None
 
-    model = MambaDepth(args, version=args.encoder, max_depth=args.max_depth, selected_config=final_config)
+    model = MambaDepth(args, version=args.encoder, max_depth=args.max_depth, selected_config=final_config, pretrained=args.pretrained)
     model.train()
 
     if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
@@ -208,7 +210,7 @@ def main_worker(gpu, ngpus_per_node, args):
 
     dis_modules_s4 = FreqMaskingDistillLossv2(
         alpha=[args.alpha_1, args.alpha_2],
-        student_dims=make_divisible(512 * args.width_multiplier),
+        student_dims=model.last_ch,
         teacher_dims=1024,
         query_hw=(14,19),  # shape of tearcher feature 
         pos_hw=(int(args.input_height/32), int(args.input_width/32)),  # shape of student feature 
@@ -226,6 +228,10 @@ def main_worker(gpu, ngpus_per_node, args):
 
         num_params_update = sum([np.prod(p.shape) for p in model.parameters() if p.requires_grad])
         logger.info("== Total number of learning parameters: {}".format(num_params_update))
+
+        num_params_backbone = sum([np.prod(p.shape) for name, p in model.named_parameters() if name.startswith("backbone")])
+        logger.info("== Total number of backbone parameters: {}".format(num_params_backbone))
+
 
     if args.distributed:
         if args.gpu is not None:
@@ -245,15 +251,16 @@ def main_worker(gpu, ngpus_per_node, args):
     else:
         raise ValueError("Distributed training is not enabled. Please set --distributed flag.")
 
-    if args.ckpt_path:  # TODO model weight match
+    # load whole weight from supernet
+    if args.ckpt_path:
         key = 'model'
         _ckpt = torch.load(open(args.ckpt_path, "rb"), map_location=torch.device("cpu"))
         logger.info("Successfully load whole ckpt {} from {}".format(args.ckpt_path, key))
-        # new_state_dict = select_depth_from_supernet(_ckpt[key], model.state_dict(), depth_mask=args.depth)  # Match depth of the pretrained weight
         incompatibleKeys = model.load_state_dict(_ckpt[key], strict=False)
         logger.info("== missing_keys: {}".format(incompatibleKeys))
         key2 = 'distill_module'
         if key2 in _ckpt and args.f_distill:  # Note!
+            assert False,'Not use pretrained distill_module'
             dis_modules_s4.load_state_dict(_ckpt[key2])
             logger.info("Successfully load distill_module ckpt {} from {}".format(args.ckpt_path, key2))
         del _ckpt

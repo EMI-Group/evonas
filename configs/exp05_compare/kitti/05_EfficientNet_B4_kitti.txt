@@ -1,0 +1,46 @@
+--teacher_config ./configs/depth_any_kitti.py
+--model_name compare_model
+--encoder EfficientNet_B4
+
+--dataset kitti
+--data_path /data/dataset/KITTI/
+--gt_path /data/dataset/KITTI/data_depth_annotated/
+--filenames_file data_splits/eigen_train_files_with_gt.txt
+--batch_size 16
+--num_epochs 40
+--learning_rate 2e-4
+--min_lr 2e-6
+--warmup_lr 1e-6
+--warmup_epochs 3
+--weight_decay 0.001
+--max_norm -1
+--num_threads 1
+--input_height 352
+--input_width 1216
+--max_depth 80
+--do_kb_crop
+--do_random_rotate
+--degree 1.0
+--log_directory ./runs/exp05_compare/05_EfficientNet_B4_kitti/
+--multiprocessing_distributed
+--dist_url tcp://127.0.0.1:2362
+--devices 0,1
+
+--log_freq 1000
+--do_online_eval
+--eval_freq 1000
+--data_path_eval /data/dataset/KITTI/
+--gt_path_eval /data/dataset/KITTI/data_depth_annotated/
+--filenames_file_eval data_splits/eigen_test_files_with_gt.txt
+--min_depth_eval 1e-3
+--max_depth_eval 80
+--eigen_crop
+
+
+--dynamic_batch_size 1
+--kd_ratio 0.1
+--f_distill
+--alpha_1 0.08
+--alpha_2 0.06
+--fmd_learning_rate 5e-5
+--amp

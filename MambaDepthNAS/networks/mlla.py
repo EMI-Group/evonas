@@ -433,6 +433,7 @@ class MLLA(nn.Module):
         return {'absolute_pos_embed'}
 
     def forward(self, x):
+        B, _, H, W = x.shape
         x = self.patch_embed(x)
         if self.ape:
             x = x + self.absolute_pos_embed
@@ -443,7 +444,11 @@ class MLLA(nn.Module):
             x, before_x = layer(x)
             feats_list.append(before_x)
 
-        return x, feats_list
+        for i in range(len(feats_list)):  # 恢复feats结构
+            feats_list[i] = feats_list[i].permute(0, 2, 1).reshape(B, -1, H//(2**(i+2)), W//(2**(i+2))).contiguous()
+
+        # return x, feats_list
+        return feats_list
 
 
 def load_pretrained(ckpt_path, model, skip_RoPE=False):

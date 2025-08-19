@@ -38,6 +38,8 @@ Using **Once-for-All Progressive Shrinking**
 
 2025/8/14 update Retrain(Support mixed precision training)
 
+2025/8/19 update Retrain(Support other encoders for compaper, e.g. ConvNeXt, EfficientNet, SwinTransformer, MambaVision, MLLA)
+
 ------
 
 ##  Search Space
@@ -104,7 +106,7 @@ sh whole_run_kitti.sh
     - [ ] ~~load and map weight from supernet~~
     - [x] fixed dis_modules_s4 weight loading(not helpful)
     - [x] add mixed precision (AMP)
-
+    - [x] add other encoders (CNN,ViT,Mamba)
 ------
 
 ## Pipline

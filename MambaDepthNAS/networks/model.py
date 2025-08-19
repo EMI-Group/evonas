@@ -32,7 +32,7 @@ class MambaDepth(nn.Module):
         if version == 'SuperNet':
             from .VSSD.mamba2 import Backbone_VMAMBA2
             self.backbone = Backbone_VMAMBA2(
-                # image_size=(args.input_height, args.input_width),  # ?
+                image_size=(args.input_height, args.input_width),  # not useful
                 patch_size=4,  # 无实际意义
                 in_chans=3,
                 embed_dim=64,
@@ -98,7 +98,7 @@ class MambaDepth(nn.Module):
                 num_heads=[2, 4, 8, 16],
                 mlp_ratio=selected_config['mlp_ratio'],
                 drop_rate=0.0,
-                drop_path_rate=0.0,  # note!
+                drop_path_rate=0.2,
                 simple_downsample=False,
                 simple_patch_embed=False,
                 ssd_expansion=selected_config['ssd_expand'],
@@ -118,31 +118,22 @@ class MambaDepth(nn.Module):
             in_channels = [make_divisible(c * args.width_multiplier) for c in in_channels]
             
         elif version == 'MambaVision':
-            from .mambaVision import Block, MambaVision
-            model_path = './mambavision_tiny_1k.pth.tar'
-            depths = [1, 3, 8, 4]
-            num_heads = [2, 4, 8, 16]
-            window_size = [8, 8, 14, 7]
-            dim = 80
-            in_dim = 32
-            mlp_ratio = 4
-            drop_path_rate = 0.2
-
-            self.backbone = MambaVision(depths=depths,
-                                        num_heads=num_heads,
-                                        window_size=window_size,
-                                        dim=dim,
-                                        in_dim=in_dim,
-                                        mlp_ratio=mlp_ratio,
-                                        drop_path_rate=drop_path_rate)
+            from .mambaVision import MambaVision
+            self.backbone = MambaVision(depths=[1, 3, 8, 4],
+                                        num_heads=[2, 4, 8, 16],
+                                        window_size=[8, 8, 14, 7],
+                                        dim=80,
+                                        in_dim=32,
+                                        mlp_ratio=4,
+                                        drop_path_rate=0.2)
             if pretrained:
-                self.backbone._load_state_dict(model_path)
+                self.backbone._load_state_dict(pretrained)
             
             in_channels = [80, 160, 320, 640]
 
         elif version == 'MLLA':
             from .mlla import MLLA, load_pretrained
-            self.backbone = MLLA(img_size=(352,1216),
+            self.backbone = MLLA(img_size=(args.input_height, args.input_width),
                                 patch_size=4,
                                 in_chans=3,
                                 embed_dim=64,
@@ -154,9 +145,18 @@ class MambaDepth(nn.Module):
                                 drop_path_rate=0.2,
                                 ape=False,
                                 use_checkpoint=False)
-            ckpt_path = './MLLA-T.pth'
-            load_pretrained(ckpt_path, self.backbone, skip_RoPE=True)
+            load_pretrained(pretrained, self.backbone, skip_RoPE=True)
             in_channels = [64, 128, 256, 512]
+        
+        elif version == 'ConvNeXt_T':
+            from .official_encoder import deepFeatureExtractor_ConvNeXt_Tiny
+            self.backbone = deepFeatureExtractor_ConvNeXt_Tiny(pretrained=True)
+            in_channels = self.backbone.dimList
+        
+        elif version == 'EfficientNet_B4':
+            from .official_encoder import deepFeatureExtractor_EfficientNetB4
+            self.backbone = deepFeatureExtractor_EfficientNetB4(pretrained=True)
+            in_channels = self.backbone.dimList
 
         else:
             from .swin_transformer import SwinTransformer
@@ -190,20 +190,33 @@ class MambaDepth(nn.Module):
                 frozen_stages=frozen_stages
             )
             self.backbone = SwinTransformer(**backbone_cfg)
+            if pretrained:
+                self.backbone.init_weights(pretrained)
 
+        self.use_proj = False
+        if args.width_multiplier == 1.0 and in_channels != [64, 128, 256, 512]:
+            self.conv_p3 = nn.Conv2d(in_channels[3], 512, kernel_size=1, stride=1, padding=0)
+            self.conv_p2 = nn.Conv2d(in_channels[2], 256, kernel_size=1, stride=1, padding=0)
+            self.conv_p1 = nn.Conv2d(in_channels[1], 128, kernel_size=1, stride=1, padding=0)
+            self.conv_p0 = nn.Conv2d(in_channels[0], 64, kernel_size=1, stride=1, padding=0)
+            self.use_proj = True
+            in_channels = [64, 128, 256, 512]
+
+        ### decoder
         embed_dim = 512
         final_dims = 64
         depths = [1,1,1,1]
+        self.last_ch = in_channels[3]
 
         self.spa_mab3 = SpatialMambaLayer(dim=in_channels[3], depth=depths[0], d_state=1, mlp_ratio=4.0)
         self.spa_mab2 = SpatialMambaLayer(dim=in_channels[2], depth=depths[1], d_state=1, mlp_ratio=4.0)
         self.spa_mab1 = SpatialMambaLayer(dim=in_channels[1], depth=depths[2], d_state=1, mlp_ratio=4.0)
         self.spa_mab0 = SpatialMambaLayer(dim=in_channels[0], depth=depths[3], d_state=1, mlp_ratio=4.0)
 
-        self.proj_out3 = nn.Conv2d(in_channels[3], in_channels[3]*2, 3, 1, 1)
-        self.proj_out2 = nn.Conv2d(in_channels[2], in_channels[2]*2, 3, 1, 1)
-        self.proj_out1 = nn.Conv2d(in_channels[1], in_channels[1]*2, 3, 1, 1)
-        self.proj_final = nn.Conv2d(in_channels[0], final_dims, 3, 1, 1)
+        self.proj_out3 = nn.Conv2d(in_channels[3], in_channels[3]*2, kernel_size=3, stride=1, padding=1)
+        self.proj_out2 = nn.Conv2d(in_channels[2], in_channels[2]*2, kernel_size=3, stride=1, padding=1)
+        self.proj_out1 = nn.Conv2d(in_channels[1], in_channels[1]*2, kernel_size=3, stride=1, padding=1)
+        self.proj_final = nn.Conv2d(in_channels[0], final_dims, kernel_size=3, stride=1, padding=1)
         
         # self.decoder = PSP(**decoder_cfg)  # 影响一个点
         self.PPM = nn.Sequential(StripPooling(in_channels[3], (20,12)),
@@ -218,6 +231,17 @@ class MambaDepth(nn.Module):
 
     def forward(self, imgs, mid_features=False):
         feats = self.backbone(imgs)
+        # for i, f in enumerate(feats):
+        #     print(f'feats[{i}].shape = {f.shape}')
+        # assert False
+
+        if self.use_proj:
+            feats = list(feats)  # tuple 禁止原地赋值
+            feats[0] = self.conv_p0(feats[0])
+            feats[1] = self.conv_p1(feats[1])
+            feats[2] = self.conv_p2(feats[2])
+            feats[3] = self.conv_p3(feats[3])
+            feats = tuple(feats)
 
         ppm_out = self.PPM(feats[3])
 
