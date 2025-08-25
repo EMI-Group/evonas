@@ -2,7 +2,7 @@ import torch
 import torch.backends.cudnn as cudnn
 
 import os, sys
-os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+os.environ['CUDA_VISIBLE_DEVICES'] = '7'
 import argparse
 import numpy as np
 import time
@@ -26,6 +26,7 @@ parser.add_argument('--encoder',                   type=str,   help='type of enc
 parser.add_argument('--dataset',                   type=str,   help='dataset to train on, kitti or nyu', default='kitti')
 parser.add_argument('--input_height',              type=int,   help='input height', default=352)
 parser.add_argument('--input_width',               type=int,   help='input width',  default=1216)
+parser.add_argument('--width_multiplier',            type=float,  default=1.0)
 
 
 
@@ -81,10 +82,10 @@ def main_worker(args):
         args.input_width = 640
 
     config= {}
-    config['mlp_ratio'] = [4.0, 4.0, 4.0, 4.0]
-    config['d_state'] = [64, 64, 64, -1]
-    config['ssd_expand'] = [2, 2, 2, -1]
-    config['depth'] = [2, 4, 8, 4]
+    config['mlp_ratio'] = [2.0, 0.5, 1.0, 1.0]
+    config['d_state'] = [16, 16, 64, -1]
+    config['ssd_expand'] = [0.5, 0.5, 2, -1]
+    config['depth'] = [1, 1, 1, 1]
 
     # for stage, maxd in enumerate([2, 4, 8, 4]):
     #     for dp in range(1, maxd+1):
@@ -150,6 +151,9 @@ def main_worker(args):
 
     num_params = sum([np.prod(p.size()) for p in model.parameters()])
     print("== Total number of parameters: {}".format(num_params))
+
+    num_backbone_params = sum([np.prod(p.size()) for name, p in model.named_parameters() if 'backbone' in name])
+    print("== Total number of backbone parameters: {}".format(num_backbone_params))
 
     num_params_update = sum([np.prod(p.shape) for p in model.parameters() if p.requires_grad])
     print("== Total number of learning parameters: {}".format(num_params_update))

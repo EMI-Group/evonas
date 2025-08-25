@@ -40,6 +40,10 @@ Using **Once-for-All Progressive Shrinking**
 
 2025/8/19 update Retrain(Support other encoders for compaper, e.g. ConvNeXt, EfficientNet, SwinTransformer, MambaVision, MLLA)
 
+2025/8/21 update SuperNet Fine-tuning(Support mixed precision training)
+
+2025/8/25 update SuperNet Fine-tuning(Support init weights by remapping pretrained weights)
+
 ------
 
 ##  Search Space
@@ -89,6 +93,7 @@ sh whole_run_kitti.sh
     - [x] Knowledge Distillation (bug fixed)
     - [x] add new kd strategy (part1 and part2 of scaleKD)
     - [x] ~~Change supernet depth to [8,8,8,8] and pretrained weights~~
+    - [x] add mixed precision (AMP)
 - [x] NAS Search (pymoo, param_cal)
     - [x] add depth choose ~~or only one layer~~
     - [ ] ~~recompute the Params and FLOP of subnet~~

@@ -6,6 +6,7 @@
 --gt_path ../../dataset/KITTI/data_depth_annotated/
 --filenames_file data_splits/eigen_train_files_with_gt.txt
 --num_threads_val 1
+--persistent_workers
 --batch_size_val 4
 --input_height 352
 --input_width 1216
@@ -13,10 +14,10 @@
 --do_kb_crop
 --do_random_rotate
 --degree 1.0
---log_directory ./runs/search_kitti/run5_search_kitti_p96e200_m/
+--log_directory ./runs/search_kitti/run0_search_kitti/
 --multiprocessing_distributed
 --dist_url tcp://127.0.0.1:2371
---devices 0,1,2,3,4,5,6,7
+--devices 0,1,2,3
 
 --data_path_eval ../../dataset/KITTI/
 --gt_path_eval ../../dataset/KITTI/data_depth_annotated/
@@ -30,10 +31,7 @@
 --ssd_expand "[0.5, 1, 2, 3, 4]"
 --open_depth
 
---population_size 96
---n_iter 200
+--population_size 50
+--n_iter 50
 --cross_p 0.95
 --mut_p 0.1
-
---model_batch 3
---concurrency 4

@@ -8,6 +8,8 @@ from mamba_ssm.ops.triton.ssd_combined import mamba_split_conv1d_scan_combined
 from mamba_ssm.ops.triton.layernorm_gated import RMSNorm as RMSNormGated
 from mamba_ssm.ops.triton.selective_state_update import selective_state_update
 from einops import rearrange, repeat
+from typing import Dict
+
 
 import math
 import copy
@@ -647,22 +649,27 @@ class Backbone_VMAMBA2(VMAMBA2):
         del self.head
         del self.norm
         del self.avgpool
-        self.load_pretrained(pretrained,key=kwargs.get('key','model'))
+        self.load_pretrained(pretrained,key=kwargs.get('key','model'), remap=kwargs.get('remap',False))
 
-    def load_pretrained(self, ckpt=None, key="model"):
+    def load_pretrained(self, ckpt=None, key="model", remap=False):
         if ckpt is None:
             return
 
-        try:
-            _ckpt = torch.load(open(ckpt, "rb"), map_location=torch.device("cpu"))
-            print(f"Successfully load ckpt {ckpt} from {key}")
-            # new_state_dict = expand_depth(_ckpt[key], self.state_dict())  # Expand depth of the pretrained weight
+        _ckpt = torch.load(ckpt, map_location="cpu")
+        print(f"Successfully load ckpt {ckpt} from {key}")
+        
+        if remap:
+            remap_state_dict = remap_channels(_ckpt[key], self.state_dict())
+            incompatibleKeys = self.load_state_dict(remap_state_dict, strict=False)
+            del remap_state_dict
+            print("[load_backbone_pretrained] remap=True → remap_channels")
+        else:
             incompatibleKeys = self.load_state_dict(_ckpt[key], strict=False)
-            print(incompatibleKeys)
-            del _ckpt
-            # del new_state_dict
-        except Exception as e:
-            print(f"Failed loading checkpoint form {ckpt}: {e}")
+            print("[load_backbone_pretrained] remap=False → direct_load")
+
+        print(incompatibleKeys)
+        del _ckpt
+
 
 
     def forward(self, x):
@@ -702,3 +709,71 @@ class Backbone_VMAMBA2(VMAMBA2):
             return x
 
         return outs
+
+
+
+@torch.no_grad()
+def remap_channels(seed_sd: Dict[str, torch.Tensor],
+                   model_sd: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+    """
+    仅做通道维度适配（in/out channels）。未覆盖通道/列置 0。
+    - Conv2d: [out, in, kH, kW]  若 kernel 尺寸不一致 -> 直接报错并终止；
+              否则拷贝 [:out_min, :in_min, :kH_min, :kW_min]，其余置 0
+    - Linear: [out, in]          拷贝 [:out_min, :in_min]，其余置 0
+    - 1D 参数: [C]               拷贝 [:C_min]，其余置 0
+    其他形状：保持 model 默认权重（不处理）
+    """
+    mapped = {}
+
+    for k, tgt in model_sd.items():
+        if k not in seed_sd:
+            continue
+        src = seed_sd[k]
+
+        # 形状一致：直接复用旧权重
+        if src.shape == tgt.shape:
+            mapped[k] = src
+            continue
+
+        # Conv2d: [out, in, kH, kW]
+        if src.ndim == 4 and tgt.ndim == 4:
+            # kernel 必须一致；不一致直接报错
+            if src.shape[2:] != tgt.shape[2:]:
+                raise ValueError(
+                    f"[remap_channels] Kernel size mismatch for '{k}': "
+                    f"seed {tuple(src.shape)}, model {tuple(tgt.shape)}; "
+                    f"seed kHW={tuple(src.shape[2:])}, model kHW={tuple(tgt.shape[2:])}"
+                )
+            out_min = min(src.shape[0], tgt.shape[0])
+            in_min  = min(src.shape[1], tgt.shape[1])
+            kh_min  = min(src.shape[2], tgt.shape[2])
+            kw_min  = min(src.shape[3], tgt.shape[3])
+
+            buf = torch.zeros_like(tgt)
+            buf[:out_min, :in_min, :kh_min, :kw_min] = \
+                src[:out_min, :in_min, :kh_min, :kw_min]
+            mapped[k] = buf
+            continue
+
+        # Linear: [out, in]
+        if src.ndim == 2 and tgt.ndim == 2:
+            out_min = min(src.shape[0], tgt.shape[0])
+            in_min  = min(src.shape[1], tgt.shape[1])
+            buf = torch.zeros_like(tgt)
+            buf[:out_min, :in_min] = src[:out_min, :in_min]
+            mapped[k] = buf
+            continue
+
+        # 1D 参数（BN weight/bias、bias、running_mean/var 等）
+        if src.ndim == 1 and tgt.ndim == 1:
+            n = min(src.shape[0], tgt.shape[0])
+            buf = torch.zeros_like(tgt)
+            buf[:n] = src[:n]
+            mapped[k] = buf
+            continue
+
+        # 其他形状：不处理，保留新模型初始化
+
+    new_sd = dict(model_sd)
+    new_sd.update(mapped)
+    return new_sd

@@ -1,15 +1,16 @@
 #!/bin/bash
 set -e
 
-base_configs="configs/prog_shrink/base_nyu.txt"
-out_dir="./runs/FT_supernet_nyu"
+base_configs="configs/prog_shrink/base_nyu_remap_map.txt"
+out_dir="./runs/FT_supernet_nyu_remap_amp"
 
 # 00 maxnet
 python MambaDepthNAS/train.py "@${base_configs}" \
-        --pretrain ./vssd_supernet_imagenet_1k.pth \
+        --pretrain ./vssd_tiny_best_ema.pth \
         --log_directory ${out_dir}/00_maxnet/  \
         --num_epochs 40 \
-        --warmup_epochs 3
+        --warmup_epochs 3 \
+        --remap
 
 sleep 3
 # 01 d_state part1

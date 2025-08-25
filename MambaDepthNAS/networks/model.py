@@ -19,7 +19,7 @@ class MambaDepth(nn.Module):
     """
     Depth network based on VSSD-T + SpatialMamba.
     """
-    def __init__(self, args=None, version=None, inv_depth=False, pretrained=None, 
+    def __init__(self, args=None, version=None, inv_depth=False, pretrained=None, remap=False, 
                     frozen_stages=-1, min_depth=0.1, max_depth=100.0, selected_config=None, **kwargs):
         super().__init__()
 
@@ -53,7 +53,8 @@ class MambaDepth(nn.Module):
                 d_state=64,
                 ssd_positve_dA=True,
                 # pretrained weight
-                pretrained=pretrained
+                pretrained=pretrained,
+                remap=remap
             )
             in_channels = [64, 128, 256, 512]
 

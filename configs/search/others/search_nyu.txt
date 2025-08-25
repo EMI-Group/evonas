@@ -13,7 +13,7 @@
 --max_depth 10
 --do_random_rotate
 --degree 2.5
---log_directory ./runs/search_nyu/run7_search_nyu_p96e200/
+--log_directory ./runs/search_nyu/run0_search_nyu/
 --multiprocessing_distributed
 --dist_url tcp://127.0.0.1:2381
 --devices 4,5,6,7
@@ -30,10 +30,7 @@
 --ssd_expand "[0.5, 1, 2, 3, 4]"
 --open_depth
 
---population_size 96
---n_iter 200
+--population_size 50
+--n_iter 50
 --cross_p 0.95
 --mut_p 0.1
-
---model_batch 3
---concurrency 4

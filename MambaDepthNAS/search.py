@@ -46,8 +46,6 @@ search the best network on object dataset, e.g. KITTI, NYU
 Note: latency tests included; avoid running other GPU tasks.
 '''
 
-### develop
-# python MambaDepthNAS/search.py configs/search/search_kitti.txt 
 
 ### final
 # python MambaDepthNAS/search.py configs/search/search_kitti.txt 

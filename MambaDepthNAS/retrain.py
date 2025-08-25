@@ -258,11 +258,11 @@ def main_worker(gpu, ngpus_per_node, args):
         logger.info("Successfully load whole ckpt {} from {}".format(args.ckpt_path, key))
         incompatibleKeys = model.load_state_dict(_ckpt[key], strict=False)
         logger.info("== missing_keys: {}".format(incompatibleKeys))
-        key2 = 'distill_module'
-        if key2 in _ckpt and args.f_distill:  # Note!
-            assert False,'Not use pretrained distill_module'
-            dis_modules_s4.load_state_dict(_ckpt[key2])
-            logger.info("Successfully load distill_module ckpt {} from {}".format(args.ckpt_path, key2))
+        # key2 = 'distill_module'
+        # if key2 in _ckpt and args.f_distill:  # Note!
+        #     assert False,'Not use pretrained distill_module'
+        #     dis_modules_s4.load_state_dict(_ckpt[key2])
+        #     logger.info("Successfully load distill_module ckpt {} from {}".format(args.ckpt_path, key2))
         del _ckpt
     
     model_module = unwrap_model(model)

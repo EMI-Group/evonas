@@ -41,3 +41,5 @@
 --dynamic_batch_size 1
 --kd_ratio 0.1
 --f_distill
+--alpha_1 0.08
+--alpha_2 0.06

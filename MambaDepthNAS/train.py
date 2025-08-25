@@ -23,6 +23,7 @@ from utils import post_process_depth, flip_lr, silog_loss, compute_errors, eval_
                        block_print, enable_print, normalize_result, inv_normalize, convert_arg_line_to_args, get_root_logger, unwrap_model, str2list, infer, compute_metrics
 from networks.model import MambaDepth
 from search_space import MambaSearchSpace
+from torch.amp import autocast, GradScaler
 
 '''fine-tune supernet on object dataset, e.g. KITTI, NYU'''
 
@@ -40,6 +41,7 @@ def parse_args():
     parser.add_argument('--encoder',                   type=str,   help='type of encoder, base07, large07', default='SuperNet')
     parser.add_argument('--pretrain',                  type=str,   help='path of pretrained encoder', default=None)
     parser.add_argument('--devices',                    type=str, default='0,1', help='CUDA_VISIBLE_DEVICES value, e.g., "0" or "0,1"')
+    parser.add_argument('--remap',                     action='store_true',  help='if set, backbone will load pretrained weight by remapping')
 
     # Dataset
     parser.add_argument('--dataset',                   type=str,   help='dataset to train on, kitti or nyu', default='nyu')
@@ -56,6 +58,7 @@ def parse_args():
     parser.add_argument('--ssd_expand',                type=str2list, default=[2])
     parser.add_argument('--open_depth',                action='store_true', help='if set, will open depth sampling, otherwise use fixed depth for all stages')
     parser.add_argument('--min_ones',                  type=int,    help='minimum number of active layers in each stage during sampling', default=1)
+    parser.add_argument('--width_multiplier',          type=float, help='factor to scale the number of channels in each layer (applies only to final model)', default=1.0)
 
     # Knowledge distillation
     parser.add_argument("--teacher_config",            type=str,   required=False)
@@ -82,6 +85,7 @@ def parse_args():
     parser.add_argument('--variance_focus',            type=float, help='lambda in paper: [0, 1], higher value more focus on minimizing variance of error', default=0.85)
     parser.add_argument('--max_norm',                  type=float, help='maximum norm for gradient clipping, (grad clip is not used if -1 or 0)', default=-1)
     parser.add_argument('--optimizer',                 type=str,   help='optimizer to use, adam or adamw', default='adamw')
+    parser.add_argument('--amp',                                   help='enable mixed precision (AMP)', action='store_true')
 
     # Preprocessing
     parser.add_argument('--do_random_rotate',                      help='if set, will perform random rotation for augmentation', action='store_true')
@@ -191,7 +195,7 @@ def main_worker(gpu, ngpus_per_node, args):
         logger.info('args: '+str(args))
 
     # MambaDepth model
-    model = MambaDepth(args, version=args.encoder, inv_depth=False, max_depth=args.max_depth, pretrained=args.pretrain)
+    model = MambaDepth(args, version=args.encoder, inv_depth=False, max_depth=args.max_depth, pretrained=args.pretrain, remap=args.remap)
     if args.dynamic_tanh:  ### 替换归一化层（会破坏预训练权重，暂不使用）
         assert False, 'Dynamic tanh is not good for this yet!'
         from networks.dynamic_tanh import convert_ln_to_dyt
@@ -201,24 +205,24 @@ def main_worker(gpu, ngpus_per_node, args):
     model.train()
 
     ### teacher model
-    if args.kd_ratio > 0:
+    if args.kd_ratio > 0 or args.f_distill:
         from networks.depthAny.builder import build_model
         t_config = Config.fromfile(args.teacher_config)
         teacher_model = build_model(t_config)  # include loading pretrained weight
 
-        if args.f_distill:
-            from distillation.fmdv2 import FreqMaskingDistillLossv2
-            dis_modules_s4 = FreqMaskingDistillLossv2(
-                alpha=[args.alpha_1, args.alpha_2],
-                student_dims=512,
-                teacher_dims=1024,
-                query_hw=(14,19),  # shape of tearcher feature 
-                pos_hw=(int(args.input_height/32), int(args.input_width/32)),  # shape of student feature 
-                pos_dims=1024,  # teacher feature dimension
-                self_query=True,
-                softmax_scale=[5.,5.],
-                num_heads=16
-            )
+    
+    from distillation.fmdv2 import FreqMaskingDistillLossv2
+    dis_modules_s4 = FreqMaskingDistillLossv2(
+        alpha=[args.alpha_1, args.alpha_2],
+        student_dims=512,
+        teacher_dims=1024,
+        query_hw=(14,19),  # shape of tearcher feature 
+        pos_hw=(int(args.input_height/32), int(args.input_width/32)),  # shape of student feature 
+        pos_dims=1024,  # teacher feature dimension
+        self_query=True,
+        softmax_scale=[5.,5.],
+        num_heads=16
+    ) if args.f_distill else None
 
     # print model params    
     if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
@@ -238,15 +242,11 @@ def main_worker(gpu, ngpus_per_node, args):
                 teacher_model.cuda(args.gpu)
                 teacher_model = torch.nn.parallel.DistributedDataParallel(teacher_model, device_ids=[args.gpu], broadcast_buffers=False)
 
-                if args.f_distill: 
-                    dis_modules_s4.cuda(args.gpu)
-                    dis_modules_s4 = torch.nn.parallel.DistributedDataParallel(dis_modules_s4, device_ids=[args.gpu])
+            if args.f_distill: 
+                dis_modules_s4.cuda(args.gpu)
+                dis_modules_s4 = torch.nn.parallel.DistributedDataParallel(dis_modules_s4, device_ids=[args.gpu])
         else:
-            model.cuda()
-            model = torch.nn.parallel.DistributedDataParallel(model, find_unused_parameters=True)
-            if args.kd_ratio > 0:
-                teacher_model.cuda()
-                teacher_model = torch.nn.parallel.DistributedDataParallel(teacher_model, broadcast_buffers=False)
+            assert False,'developing'
     else:
         raise ValueError("Distributed training is not enabled. Please set --distributed flag.")
 
@@ -256,41 +256,15 @@ def main_worker(gpu, ngpus_per_node, args):
         logger.info("Successfully load whole ckpt {} from {}".format(args.ckpt_path, key))
         incompatibleKeys = model.load_state_dict(_ckpt[key], strict=False)
         logger.info("== missing_keys: {}".format(incompatibleKeys))
-        key2 = 'distill_module'
-        if key2 in _ckpt and args.f_distill:  # Note!
-            dis_modules_s4.load_state_dict(_ckpt[key2])
-            logger.info("Successfully load distill_module ckpt {} from {}".format(args.ckpt_path, key2))
+        # key2 = 'distill_module'
+        # if key2 in _ckpt and args.f_distill:  # Note!
+        #     dis_modules_s4.load_state_dict(_ckpt[key2])
+        #     logger.info("Successfully load distill_module ckpt {} from {}".format(args.ckpt_path, key2))
         del _ckpt
 
-    if args.kd_ratio > 0:
+    if args.kd_ratio > 0 or args.f_distill:
         teacher_model.eval()
         teacher_model.requires_grad_(False)
-
-    '''show model'''
-    # with open(os.path.join(args.log_directory, 'max_model.log'),'w') as f:
-    #     f.write(str(model))
-    # assert False,'print model'
-
-    '''show param'''
-    # 计算FLOPs 和 Params
-    '''https://github.com/MrYxJ/calculate-flops.pytorch?tab=readme-ov-file'''
-    # print('*'*20, ' calflops ', '*'*20)
-    # from calflops import calculate_flops
-    # # from torchvision import models
-    # import sys
-    # with open('./FLOPs_Params.log', 'w') as f:
-    #     original_stdout = sys.stdout
-    #     sys.stdout = f
-    #     # model = models.resnet50()
-    #     input_shape = (8, 3, 352, 1120)
-    #     flops, macs, params = calculate_flops(model=model, 
-    #                                         input_shape=input_shape,
-    #                                         output_as_string=True,
-    #                                         output_precision=2)
-    #     sys.stdout = original_stdout
-    #     print("net FLOPs:%s   MACs:%s   Params:%s \n" %(flops, macs, params))        
-    #     #Alexnet FLOPs:4.2892 GFLOPS   MACs:2.1426 GMACs   Params:61.1008 M 
-    # assert False, 'over'
 
     if args.distributed:
         logger.info("== Model Initialized on GPU: {}".format(args.gpu))
@@ -304,12 +278,11 @@ def main_worker(gpu, ngpus_per_node, args):
 
     # Training parameters
     if args.optimizer == 'adamw':
-        backbone_params = list(model.module.backbone.parameters())
-        other_params = [p for n, p in model.module.named_parameters() if not n.startswith("backbone.")]
+        # backbone_params = list(model.module.backbone.parameters())
+        # other_params = [p for n, p in model.module.named_parameters() if not n.startswith("backbone.")]
 
         param_groups = [
-            {'params': backbone_params, 'lr': args.learning_rate},
-            {'params': other_params,    'lr': args.learning_rate},
+            {'params': model.module.parameters(), 'lr': args.learning_rate},
         ]
         if args.f_distill:
             param_groups.append(
@@ -322,7 +295,7 @@ def main_worker(gpu, ngpus_per_node, args):
     else:
         raise ValueError("Unsupported optimizer: {}".format(args.optimizer))
     
-
+    scaler = GradScaler(enabled=args.amp)
     cudnn.benchmark = True
 
     dataloader = NewDataLoader(args, 'train')
@@ -357,10 +330,7 @@ def main_worker(gpu, ngpus_per_node, args):
     warmup_steps = args.warmup_epochs * steps_per_epoch
     epoch = global_step // steps_per_epoch
 
-    if args.optimizer == 'adamw':
-        scheduler = CosineLRScheduler(optimizer, num_total_steps, t_mul=1., lr_min=args.min_lr, warmup_lr_init=args.warmup_lr, warmup_t=warmup_steps, cycle_limit=1, t_in_epochs=False, warmup_prefix=True)
-    elif args.optimizer == 'adam':
-        end_learning_rate = 0.1 * args.learning_rate
+    scheduler = CosineLRScheduler(optimizer, num_total_steps, t_mul=1., lr_min=args.min_lr, warmup_lr_init=args.warmup_lr, warmup_t=warmup_steps, cycle_limit=1, t_in_epochs=False, warmup_prefix=True)
 
     ss = MambaSearchSpace(args.mlp_ratio, args.d_state, args.ssd_expand, open_depth=args.open_depth)
 
@@ -378,55 +348,64 @@ def main_worker(gpu, ngpus_per_node, args):
             image    = sample_batched['image'].cuda(args.gpu, non_blocking=True)
             depth_gt = sample_batched['depth'].cuda(args.gpu, non_blocking=True)
 
-            if args.kd_ratio > 0:
+            if args.kd_ratio > 0 or args.f_distill:
                 with torch.no_grad():
                     teacher_model.eval()
-                    depth_tea, mid_feats_T = infer(teacher_model, image, dataset=args.dataset, focal=None)
+                    with autocast(device_type='cuda', dtype=torch.float16, enabled=args.amp):
+                        depth_tea, mid_feats_T = infer(teacher_model, image, dataset=args.dataset, focal=None)
 
             for _ in range(args.dynamic_batch_size):
-                # random sample subnet
-                sample_config = ss.sample(n_samples=1)[0]
-                model_module = unwrap_model(model)
-                model_module.backbone.set_sample_config(sample_config=sample_config)
-                # print(sample_config)  # {'mlp_ratio': [2.0, 4.0, 4.0, 4.0], 'd_state': [32, 32, 64], 'expand': [2, 4, 2], 'depth': [[0, 0, 1, 0, 1, 0, 1, 1], [1, 1, 1, 0, 0, 1, 1, 1], [0, 1, 0, 1, 0, 1, 0, 0], [1, 1, 1, 1, 0, 0, 0, 0]]}
+                with autocast(device_type='cuda', dtype=torch.float16, enabled=args.amp):
+                    # random sample subnet
+                    sample_config = ss.sample(n_samples=1)[0]
+                    model_module = unwrap_model(model)
+                    model_module.backbone.set_sample_config(sample_config=sample_config)
+                    # print(sample_config)  # {'mlp_ratio': [2.0, 4.0, 4.0, 4.0], 'd_state': [32, 32, 64], 'expand': [2, 4, 2], 'depth': [[0, 0, 1, 0, 1, 0, 1, 1], [1, 1, 1, 0, 0, 1, 1, 1], [0, 1, 0, 1, 0, 1, 0, 0], [1, 1, 1, 1, 0, 0, 0, 0]]}
 
-                depth_est, mid_feats_S = model(image, mid_features=True)
-                loss = silog_criterion.forward(depth_est, depth_gt)
+                    depth_est, mid_feats_S = model(image, mid_features=True)
+                    loss = silog_criterion.forward(depth_est, depth_gt)
 
-                ### teacher model
-                spat_loss = torch.tensor(0.0).cuda(args.gpu)
-                freq_loss = torch.tensor(0.0).cuda(args.gpu)
-                kd_loss = torch.tensor(0.0).cuda(args.gpu)
-                if args.f_distill:
-                    feat_T_s4 = mid_feats_T[3]
-                    feat_S_s4 = mid_feats_S[3]
+                    ### teacher model
+                    spat_loss = torch.tensor(0.0).cuda(args.gpu)
+                    freq_loss = torch.tensor(0.0).cuda(args.gpu)
+                    kd_loss = torch.tensor(0.0).cuda(args.gpu)
+                    if args.f_distill:
+                        feat_T_s4 = mid_feats_T[3]
+                        feat_S_s4 = mid_feats_S[3]
 
-                    spat_loss, freq_loss = dis_modules_s4(feat_S_s4, feat_T_s4)
-                    # print('spat_loss', spat_loss, 'freq_loss', freq_loss)
-                    # spat_loss tTensor(43.6711, device='cuda:0', grad_fn=<AliasBackward0>) freq_loss tTensor(31.9551, device='cuda:0', grad_fn=<AliasBackward0>)
-                    # assert False,'debug'
+                        spat_loss, freq_loss = dis_modules_s4(feat_S_s4, feat_T_s4)
+                        # print('spat_loss', spat_loss, 'freq_loss', freq_loss)
+                        # spat_loss tTensor(43.6711, device='cuda:0', grad_fn=<AliasBackward0>) freq_loss tTensor(31.9551, device='cuda:0', grad_fn=<AliasBackward0>)
+                        # assert False,'debug'
 
-                if args.kd_ratio > 0:
-                    kd_loss = silog_criterion.forward(depth_est, depth_tea, interpolate=True)
-                    # print('loss', (1 - args.kd_ratio) * loss, 'kd_loss', args.kd_ratio * kd_loss, 'spat_loss', spat_loss, 'freq_loss', freq_loss)
-                    loss = (1 - args.kd_ratio) * loss + args.kd_ratio * kd_loss + spat_loss + freq_loss
-                
-                
-                loss = loss / args.dynamic_batch_size
-                loss.backward()
+                    if args.kd_ratio > 0 or args.f_distill:
+                        kd_loss = silog_criterion.forward(depth_est, depth_tea, interpolate=True)
+                        # print('loss', (1 - args.kd_ratio) * loss, 'kd_loss', args.kd_ratio * kd_loss, 'spat_loss', spat_loss, 'freq_loss', freq_loss)
+                        loss = (1 - args.kd_ratio) * loss + args.kd_ratio * kd_loss + spat_loss + freq_loss
+                    
+                    loss = loss / args.dynamic_batch_size
 
-            if args.optimizer == 'adamw':
-                scheduler.step_update(epoch * steps_per_epoch + step)
-                current_lr = optimizer.param_groups[1]['lr']  # for decoder
-            elif args.optimizer == 'adam':
-                for param_group in optimizer.param_groups:
-                    current_lr = (args.learning_rate - end_learning_rate) * (1 - global_step / num_total_steps) ** 0.9 + end_learning_rate
-                    param_group['lr'] = current_lr
+                if args.amp:
+                    scaler.scale(loss).backward()
+                else:    
+                    loss.backward()
+
+
+            scheduler.step_update(epoch * steps_per_epoch + step)
+            current_lr = optimizer.param_groups[0]['lr']
+            current_lr_kd = optimizer.param_groups[1]['lr'] if args.f_distill else 0
+
 
             if args.max_norm > 0:
+                if args.amp:
+                    scaler.unscale_(optimizer)
                 grad_norm = nn.utils.clip_grad_norm_(model.parameters(), args.max_norm)  # TODO max_norm need to set
                 # print(f'grad norm: {grad_norm:.2f}')
-            optimizer.step()
+            if args.amp:
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                optimizer.step()
 
             # show log and save result
             if global_step % 100 == 0:
@@ -453,6 +432,7 @@ def main_worker(gpu, ngpus_per_node, args):
                                                             and args.rank % ngpus_per_node == 0):
                     writer.add_scalar('silog_loss', loss.item(), global_step)
                     writer.add_scalar('learning_rate', current_lr, global_step)
+                    writer.add_scalar('learning_rate_kd', current_lr_kd, global_step)
                     writer.add_scalar('var_average', var_sum.item()/var_cnt, global_step)
                     depth_gt = torch.where(depth_gt < 1e-3, depth_gt * 0 + 1e3, depth_gt)
                     for i in range(num_log_images):
@@ -494,7 +474,7 @@ def main_worker(gpu, ngpus_per_node, args):
                             checkpoint = {'global_step': global_step,
                                           'model': model.state_dict(),
                                         #   'optimizer': optimizer.state_dict(),
-                                          'distill_module': dis_modules_s4.state_dict(),  # Note!
+                                          'distill_module':  dis_modules_s4.state_dict() if dis_modules_s4 is not None else None,  # Note!
                                           'best_eval_measures_higher_better': best_eval_measures_higher_better,
                                           'best_eval_measures_lower_better': best_eval_measures_lower_better,
                                           'best_eval_steps': best_eval_steps
