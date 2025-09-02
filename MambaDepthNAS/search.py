@@ -51,6 +51,10 @@ Note: latency tests included; avoid running other GPU tasks.
 # python MambaDepthNAS/search.py configs/search/search_kitti.txt 
 # python MambaDepthNAS/search.py configs/search/search_nyu.txt 
 
+### compare
+# python MambaDepthNAS/search.py configs/search/search_nyu_nokd_trained.txt
+# python MambaDepthNAS/search.py configs/search/search_kitti_nokd_trained.txt
+
 ### clear
 # echo quit | nvidia-cuda-mps-control
 
@@ -519,12 +523,11 @@ class NasProblem(Problem):
         
         self.xl = np.zeros(self.n_var)
         self.xu = np.array(
-                        [len(self.ss.mlp_ratio) - 1] * self.ss.num_stages +
-                        [len(self.ss.d_state) - 1] * (self.ss.num_stages - 1) +
-                        [len(self.ss.ssd_expand) - 1] * (self.ss.num_stages - 1) +
-                        [1] * sum(self.ss.depth) ,
-                        dtype=np.int32
-                    )
+                [len(self.ss.mlp_ratio) - 1, len(self.ss.d_state) - 1, len(self.ss.ssd_expand) - 1] * (self.ss.num_stages - 1) +
+                [len(self.ss.mlp_ratio) - 1] + 
+                [1] * sum(self.ss.depth) ,
+                dtype=np.int32
+                )
         
         # Worker
         gpus_list = [str(gpus)] if isinstance(gpus, int) else [str(g) for g in

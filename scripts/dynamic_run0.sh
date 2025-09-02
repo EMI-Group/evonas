@@ -1,8 +1,18 @@
 #!/bin/bash
 
 
-python MambaDepthNAS/retrain.py configs/exp04_IN_retrain/04_retrain_nyu_lr2e4.txt
+python MambaDepthNAS/search.py configs/search/search_nyu.txt
 
-python MambaDepthNAS/retrain.py configs/exp04_IN_retrain/05_retrain_nyu_lr4e4.txt
+python MambaDepthNAS/search.py configs/search/search_kitti.txt
+
+python MambaDepthNAS/search.py configs/search/search_nyu_remap.txt
+
+python MambaDepthNAS/search.py configs/search/search_nyu_random.txt
+
+python MambaDepthNAS/search.py configs/search/search_kitti_remap.txt
+
+python MambaDepthNAS/search.py configs/search/search_kitti_random.txt
+
+
 
 echo "this is fine"

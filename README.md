@@ -44,6 +44,8 @@ Using **Once-for-All Progressive Shrinking**
 
 2025/8/25 update SuperNet Fine-tuning(Support init weights by remapping pretrained weights)
 
+2025/9/2 update NAS Search(Change search space code order)
+
 ------
 
 ##  Search Space

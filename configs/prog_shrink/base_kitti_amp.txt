@@ -20,10 +20,10 @@
 --do_kb_crop
 --do_random_rotate
 --degree 1.0
---log_directory ./runs/base_kitti_remap_amp/
+--log_directory ./runs/kitti_base_amp_config/
 --multiprocessing_distributed
---dist_url tcp://127.0.0.1:2354
---devices 6,7
+--dist_url tcp://127.0.0.1:2350
+--devices 2,3
 
 --log_freq 1000
 --do_online_eval

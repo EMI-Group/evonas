@@ -1,6 +1,6 @@
 --model_name MambaDepthSearch
 --encoder SuperNet
---ckpt_path ./runs/FT_supernet_kitti/07_depth/abs_rel_best_weight.pth
+--ckpt_path ./runs/FT_supernet_kitti_random/07_depth/abs_rel_best_weight.pth
 --dataset kitti
 --data_path ../../dataset/KITTI/
 --gt_path ../../dataset/KITTI/data_depth_annotated/
@@ -13,7 +13,7 @@
 --do_kb_crop
 --do_random_rotate
 --degree 1.0
---log_directory ./runs/search_kitti/run20_search_kitti/
+--log_directory ./runs/search_kitti/run22_search_kitti_random/
 --multiprocessing_distributed
 --dist_url tcp://127.0.0.1:2371
 --devices 0,1,2,3,4,5,6,7

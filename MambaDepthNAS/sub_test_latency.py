@@ -14,7 +14,7 @@ def parse_args():
     return parser.parse_args()
 
 @torch.no_grad()
-def test_latency_mac(model, input_shape=(1,3,224,224), device='cuda', warmup=50, repeat=30):
+def test_latency_mac(model, input_shape=(1,3,224,224), device='cuda', warmup=30, repeat=50):
     model.eval()
     input_shape = (1, *input_shape[1:])
     input_tensor = torch.randn(*input_shape).to(device)

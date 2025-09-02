@@ -1,6 +1,6 @@
 --model_name MambaDepthSearch
 --encoder SuperNet
---ckpt_path ./runs/FT_supernet_nyu/07_depth/abs_rel_best_weight.pth
+--ckpt_path ./runs/FT_supernet_nyu_random/07_depth/abs_rel_best_weight.pth
 --dataset nyu
 --data_path /data/dataset/NYU_Depth_V2/sync/
 --gt_path /data/dataset/NYU_Depth_V2/sync/
@@ -13,7 +13,7 @@
 --max_depth 10
 --do_random_rotate
 --degree 2.5
---log_directory ./runs/search_nyu/run20_search_nyu/
+--log_directory ./runs/search_nyu/run22_search_random/
 --multiprocessing_distributed
 --dist_url tcp://127.0.0.1:2381
 --devices 0,1,2,3,4,5,6,7

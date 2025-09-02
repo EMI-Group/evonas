@@ -2,7 +2,7 @@ import torch
 import torch.backends.cudnn as cudnn
 
 import os, sys
-os.environ['CUDA_VISIBLE_DEVICES'] = '7'
+os.environ['CUDA_VISIBLE_DEVICES'] = '4'
 import argparse
 import numpy as np
 import time
@@ -82,21 +82,10 @@ def main_worker(args):
         args.input_width = 640
 
     config= {}
-    config['mlp_ratio'] = [2.0, 0.5, 1.0, 1.0]
-    config['d_state'] = [16, 16, 64, -1]
-    config['ssd_expand'] = [0.5, 0.5, 2, -1]
-    config['depth'] = [1, 1, 1, 1]
-
-    # for stage, maxd in enumerate([2, 4, 8, 4]):
-    #     for dp in range(1, maxd+1):
-    #         for mr in [0.5, 1.0, 2.0, 3.0, 3.5, 4.0]:
-    #             for ds in [16, 32, 48, 64]:
-    #                 for se in [0.5, 1, 2, 3, 4]:
-    #                     config['mlp_ratio'][stage] = mr
-    #                     config['d_state'][stage] = ds
-    #                     config['ssd_expand'][stage] = se
-    #                     config['depth'][stage] = dp
-
+    config['mlp_ratio'] = [4.0, 1.0, 1.0, 2.0]
+    config['d_state'] = [48, 32, 32, -1]
+    config['ssd_expand'] = [2, 4, 2, -1]
+    config['depth'] = [1, 2, 6, 1]
 
     # MambaDepth model
     model = MambaDepth(version=args.encoder, args=args, selected_config=config)

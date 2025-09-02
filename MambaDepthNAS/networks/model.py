@@ -90,11 +90,12 @@ class MambaDepth(nn.Module):
         elif version == 'VSSD_final':
             from .VSSD.mamba2_final import Backbone_VMAMBA2_Final
             '''bulid one subset(not supernet) by config'''
+            width_multiplier = getattr(args, "width_multiplier", 1.0)
             self.backbone = Backbone_VMAMBA2_Final(
                 image_size=(args.input_height, args.input_width),
                 patch_size=4,  # 无实际意义
                 in_chans=3,
-                embed_dim=make_divisible(64 * args.width_multiplier),
+                embed_dim=make_divisible(64 * width_multiplier),
                 depths=selected_config['depth'],
                 num_heads=[2, 4, 8, 16],
                 mlp_ratio=selected_config['mlp_ratio'],
@@ -116,7 +117,7 @@ class MambaDepth(nn.Module):
             )
             in_channels = [64, 128, 256, 512]
             # scale channel
-            in_channels = [make_divisible(c * args.width_multiplier) for c in in_channels]
+            in_channels = [make_divisible(c * width_multiplier) for c in in_channels]
             
         elif version == 'MambaVision':
             from .mambaVision import MambaVision
@@ -195,7 +196,7 @@ class MambaDepth(nn.Module):
                 self.backbone.init_weights(pretrained)
 
         self.use_proj = False
-        if args.width_multiplier == 1.0 and in_channels != [64, 128, 256, 512]:
+        if getattr(args, "width_multiplier", 1.0) == 1.0 and in_channels != [64, 128, 256, 512]:
             self.conv_p3 = nn.Conv2d(in_channels[3], 512, kernel_size=1, stride=1, padding=0)
             self.conv_p2 = nn.Conv2d(in_channels[2], 256, kernel_size=1, stride=1, padding=0)
             self.conv_p1 = nn.Conv2d(in_channels[1], 128, kernel_size=1, stride=1, padding=0)

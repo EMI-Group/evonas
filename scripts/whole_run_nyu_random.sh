@@ -1,12 +1,12 @@
 #!/bin/bash
 set -e
 
-base_configs="configs/prog_shrink/base_kitti.txt"
-out_dir="./runs/FT_supernet_kitti"
+base_configs="configs/prog_shrink/base_nyu_amp.txt"
+out_dir="./runs/FT_supernet_nyu_random"
 
 # 00 maxnet
 python MambaDepthNAS/train.py "@${base_configs}" \
-        --pretrain ./vssd_supernet_imagenet_1k.pth \
+        --pretrain ./checkpoints/random_supernet_IN.pth \
         --log_directory ${out_dir}/00_maxnet/  \
         --num_epochs 40 \
         --warmup_epochs 3
