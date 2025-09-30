@@ -490,6 +490,17 @@ class BasicLayer(nn.Module):
 
 
 class VMAMBA2(nn.Module):
+    """
+    VSSD: Vision Mamba with Non-Causal State Space Duality
+    Copyright (c) 2025 Yuheng Shi
+    Source: https://github.com/YuHengsss/VSSD
+    -------------------------------------------------------
+    Modified by: Zhihao Yu
+    Changes:
+    - Replaced certain Conv and Linear layers with supernet-compatible modules
+    - Added set_sample_config to enable sampling for supernet training
+    - Modified the outputs to generate four multi-scale feature maps for the monocular depth estimation decoder
+    """
     def __init__(self, img_size=224, patch_size=4, in_chans=3, num_classes=1000,
                  embed_dim=64, depths=[2, 4, 12, 4], num_heads=[2, 4, 8, 16],
                  mlp_ratio=4., qkv_bias=True, drop_rate=0., drop_path_rate=0.2,

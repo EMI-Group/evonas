@@ -6,7 +6,9 @@
 # Copyright (c) 2024 MzeroMiko
 # -----------------------------------------------------------------------------------
 # Spatial-Mamba: Effective Visual State Space Models via Structure-Aware State Fusion
-# Modified by Chaodong Xiao
+# Copyright (c) 2025 Chaodong Xiao
+# License: Apache 2.0 license
+# Source: https://github.com/EdwardChasel/Spatial-Mamba
 # -----------------------------------------------------------------------------------
 
 import math

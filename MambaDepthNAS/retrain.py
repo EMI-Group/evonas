@@ -40,7 +40,8 @@ def parse_args():
     parser.add_argument('--model_name',                type=str,   help='model name', default='MambaDepth')
     parser.add_argument('--encoder',                   type=str,   help='type of encoder, SuperNet, VSSD_final, tiny07', default='SuperNet')
     parser.add_argument('--pretrained',                type=str,   help='path of pretrained encoder', default=None)
-    parser.add_argument('--devices',                    type=str, default='0,1', help='CUDA_VISIBLE_DEVICES value, e.g., "0" or "0,1"')
+    parser.add_argument('--devices',                   type=str,  default='0,1', help='CUDA_VISIBLE_DEVICES value, e.g., "0" or "0,1"')
+    parser.add_argument('--neck',                      type=str,  help='Module between backbone and decoder', default='sp')
 
     # Dataset
     parser.add_argument('--dataset',                   type=str,   help='dataset to train on, kitti or nyu', default='nyu')
@@ -120,7 +121,7 @@ def parse_args():
                                                                         'if empty outputs to checkpoint folder', default='')
     # experimental
     parser.add_argument('--dynamic_tanh',              action='store_true', help='if set, will use dynamic tanh for normalization')
-    
+    parser.add_argument('--decoder',                   type=str,   help='', default='mamba')
 
     if sys.argv.__len__() == 2:
         arg_filename_with_prefix = '@' + sys.argv[1]
@@ -196,7 +197,21 @@ def main_worker(gpu, ngpus_per_node, args):
         'depth': [sum(lst) for lst in args.depth],
     } if args.encoder == 'VSSD_final' else None
 
-    model = MambaDepth(args, version=args.encoder, max_depth=args.max_depth, selected_config=final_config, pretrained=args.pretrained)
+    if args.decoder == 'mamba':
+        Model = MambaDepth
+    elif args.decoder == 'crfs':
+        from networks.model import MambaDepth_Dec_CRFs
+        Model = MambaDepth_Dec_CRFs
+    elif args.decoder == 'idisc':
+        from networks.model import MambaDepth_Dec_iDisc
+        Model = MambaDepth_Dec_iDisc
+    elif args.decoder == 'vmamba':
+        from networks.model import MambaDepth_Dec_VMamba
+        Model = MambaDepth_Dec_VMamba
+    else:
+        raise NotImplementedError
+    
+    model = Model(args, version=args.encoder, max_depth=args.max_depth, selected_config=final_config, pretrained=args.pretrained)
     model.train()
 
     if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
@@ -286,7 +301,11 @@ def main_worker(gpu, ngpus_per_node, args):
 
     '''show param'''
     # 计算FLOPs 和 Params
-    '''https://github.com/MrYxJ/calculate-flops.pytorch?tab=readme-ov-file'''
+    # from ptflops import get_model_complexity_info
+    # macs, params = get_model_complexity_info(model, (3, 480, 640), as_strings=False, backend='pytorch', print_per_layer_stat=False)
+    # print(f'macs: {macs/1e9}G, params: {params/1e6}M')
+
+    # '''https://github.com/MrYxJ/calculate-flops.pytorch?tab=readme-ov-file'''
     # print('*'*20, ' calflops ', '*'*20)
     # from calflops import calculate_flops
     # # from torchvision import models
@@ -295,7 +314,7 @@ def main_worker(gpu, ngpus_per_node, args):
     #     original_stdout = sys.stdout
     #     sys.stdout = f
     #     # model = models.resnet50()
-    #     input_shape = (8, 3, 352, 1120)
+    #     input_shape = (1, 3, 480, 640)
     #     flops, macs, params = calculate_flops(model=model, 
     #                                         input_shape=input_shape,
     #                                         output_as_string=True,
@@ -373,6 +392,8 @@ def main_worker(gpu, ngpus_per_node, args):
             for _ in range(args.dynamic_batch_size):
                 with autocast(device_type='cuda', dtype=torch.float16, enabled=args.amp):
                     '''note: if args.dynamic_batch_size > 0, you can set model.no_sync() to recude cost time'''
+                    if args.encoder == 'SuperNet':
+                        model_module.backbone.set_sample_config(sample_config=selected_config)
                     depth_est, mid_feats_S = model(image, mid_features=True)
                     loss = silog_criterion.forward(depth_est, depth_gt)
 

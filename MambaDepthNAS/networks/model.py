@@ -4,7 +4,6 @@ import torch.nn.functional as F
 from typing import Optional, Tuple, Union
 
 # from .mambaVision import Block, MambaVisionLayer
-# from .newcrf_layers import NewCRF
 from .uper_crf_head import PSP, StripPooling
 
 from .SpaMamba.spatialmamba import SpatialMambaLayer
@@ -120,7 +119,7 @@ class MambaDepth(nn.Module):
             in_channels = [make_divisible(c * width_multiplier) for c in in_channels]
             
         elif version == 'MambaVision':
-            from .mambaVision import MambaVision
+            from .encoders.mambaVision import MambaVision
             self.backbone = MambaVision(depths=[1, 3, 8, 4],
                                         num_heads=[2, 4, 8, 16],
                                         window_size=[8, 8, 14, 7],
@@ -134,7 +133,7 @@ class MambaDepth(nn.Module):
             in_channels = [80, 160, 320, 640]
 
         elif version == 'MLLA':
-            from .mlla import MLLA, load_pretrained
+            from .encoders.mlla import MLLA, load_pretrained
             self.backbone = MLLA(img_size=(args.input_height, args.input_width),
                                 patch_size=4,
                                 in_chans=3,
@@ -151,17 +150,17 @@ class MambaDepth(nn.Module):
             in_channels = [64, 128, 256, 512]
         
         elif version == 'ConvNeXt_T':
-            from .official_encoder import deepFeatureExtractor_ConvNeXt_Tiny
+            from .encoders.official_encoder import deepFeatureExtractor_ConvNeXt_Tiny
             self.backbone = deepFeatureExtractor_ConvNeXt_Tiny(pretrained=True)
             in_channels = self.backbone.dimList
         
         elif version == 'EfficientNet_B4':
-            from .official_encoder import deepFeatureExtractor_EfficientNetB4
+            from .encoders.official_encoder import deepFeatureExtractor_EfficientNetB4
             self.backbone = deepFeatureExtractor_EfficientNetB4(pretrained=True)
             in_channels = self.backbone.dimList
 
         else:
-            from .swin_transformer import SwinTransformer
+            from .encoders.swin_transformer import SwinTransformer
             window_size = int(version[-2:])
 
             if version[:-2] == 'base':
@@ -220,9 +219,25 @@ class MambaDepth(nn.Module):
         self.proj_out1 = nn.Conv2d(in_channels[1], in_channels[1]*2, kernel_size=3, stride=1, padding=1)
         self.proj_final = nn.Conv2d(in_channels[0], final_dims, kernel_size=3, stride=1, padding=1)
         
-        # self.decoder = PSP(**decoder_cfg)  # 影响一个点
-        self.PPM = nn.Sequential(StripPooling(in_channels[3], (20,12)),
+        self.neck_type = getattr(args, "neck", "sp")
+        if self.neck_type == 'sp':
+            self.PPM = nn.Sequential(StripPooling(in_channels[3], (20,12)),
                                      StripPooling(in_channels[3], (20,12)))
+        elif self.neck_type == 'ppm':
+            decoder_cfg = dict(
+                in_channels=in_channels,
+                in_index=[0, 1, 2, 3],
+                pool_scales=(1, 2, 3, 6),
+                channels=embed_dim,
+                dropout_ratio=0.0,
+                num_classes=32,
+                norm_cfg=dict(type='BN', requires_grad=True),
+                align_corners=False
+            )
+            self.PPM = PSP(**decoder_cfg)
+        else:
+            self.PPM = nn.Identity()
+
         self.disp_head1 = DispHead(input_dim=final_dims)
 
         self.up_mode = 'bilinear'
@@ -245,7 +260,10 @@ class MambaDepth(nn.Module):
             feats[3] = self.conv_p3(feats[3])
             feats = tuple(feats)
 
-        ppm_out = self.PPM(feats[3])
+        if self.neck_type == 'ppm':
+            ppm_out = self.PPM(feats)
+        else:
+            ppm_out = self.PPM(feats[3])
 
         e3 = self.spa_mab3(ppm_out)
         e3 = e3 + feats[3]
@@ -272,6 +290,339 @@ class MambaDepth(nn.Module):
         
         return depth
 
+
+class MambaDepth_Dec_CRFs(nn.Module):
+    """
+    Depth network based on Mamba_backbone + NewCRFs.
+    """
+    def __init__(self, args=None, version=None, inv_depth=False, pretrained=None, remap=False, 
+                    frozen_stages=-1, min_depth=0.1, max_depth=100.0, selected_config=None, **kwargs):
+        super().__init__()
+
+        self.inv_depth = inv_depth
+        self.version = version
+        self.with_neck = False
+
+        ### encoder
+        if version == 'VSSD_final':
+            from .VSSD.mamba2_final import Backbone_VMAMBA2_Final
+            '''bulid one subset(not supernet) by config'''
+            width_multiplier = getattr(args, "width_multiplier", 1.0)
+            self.backbone = Backbone_VMAMBA2_Final(
+                image_size=(args.input_height, args.input_width),
+                patch_size=4,  # 无实际意义
+                in_chans=3,
+                embed_dim=make_divisible(64 * width_multiplier),
+                depths=selected_config['depth'],
+                num_heads=[2, 4, 8, 16],
+                mlp_ratio=selected_config['mlp_ratio'],
+                drop_rate=0.0,
+                drop_path_rate=0.2,
+                simple_downsample=False,
+                simple_patch_embed=False,
+                ssd_expansion=selected_config['ssd_expand'],
+                ssd_ngroups=1,
+                ssd_chunk_size=256,
+                linear_attn_duality=True,
+                lepe=False,
+                attn_types=['mamba2', 'mamba2', 'mamba2', 'standard'],
+                bidirection=False,
+                d_state=selected_config['d_state'],
+                ssd_positve_dA=True,
+                # pretrained weight
+                pretrained=pretrained
+            )
+            in_channels = [64, 128, 256, 512]
+            # scale channel
+            in_channels = [make_divisible(c * width_multiplier) for c in in_channels]
+        else:
+            raise NotImplementedError
+
+        self.use_proj = False
+        if getattr(args, "width_multiplier", 1.0) == 1.0 and in_channels != [64, 128, 256, 512]:
+            self.conv_p3 = nn.Conv2d(in_channels[3], 512, kernel_size=1, stride=1, padding=0)
+            self.conv_p2 = nn.Conv2d(in_channels[2], 256, kernel_size=1, stride=1, padding=0)
+            self.conv_p1 = nn.Conv2d(in_channels[1], 128, kernel_size=1, stride=1, padding=0)
+            self.conv_p0 = nn.Conv2d(in_channels[0], 64, kernel_size=1, stride=1, padding=0)
+            self.use_proj = True
+            in_channels = [64, 128, 256, 512]
+
+        ### decoder
+        win = 7
+        embed_dim = 512
+        crf_dims = [64, 128, 256, 512]
+        v_dims = [32, 64, 128, embed_dim]
+        self.last_ch = in_channels[3]
+
+        from .decoders.newcrf_layers import NewCRF
+        self.crf3 = NewCRF(input_dim=in_channels[3], embed_dim=crf_dims[3], window_size=win, v_dim=v_dims[3], num_heads=32)  # x的输入维度，整体输出维度，窗口大小，v的输入维度，注意力头数
+        self.crf2 = NewCRF(input_dim=in_channels[2], embed_dim=crf_dims[2], window_size=win, v_dim=v_dims[2], num_heads=16)
+        self.crf1 = NewCRF(input_dim=in_channels[1], embed_dim=crf_dims[1], window_size=win, v_dim=v_dims[1], num_heads=8)
+        self.crf0 = NewCRF(input_dim=in_channels[0], embed_dim=crf_dims[0], window_size=win, v_dim=v_dims[0], num_heads=4)
+        
+        # self.decoder = PSP(**decoder_cfg)  # 影响一个点
+        self.PPM = nn.Sequential(StripPooling(in_channels[3], (20,12)),
+                                     StripPooling(in_channels[3], (20,12)))
+        self.disp_head1 = DispHead(input_dim=crf_dims[0])
+
+        self.up_mode = 'bilinear'
+        
+        self.min_depth = min_depth
+        self.max_depth = max_depth
+        
+
+    def forward(self, imgs, mid_features=False):
+        feats = self.backbone(imgs)
+
+        if self.use_proj:
+            feats = list(feats)
+            feats[0] = self.conv_p0(feats[0])
+            feats[1] = self.conv_p1(feats[1])
+            feats[2] = self.conv_p2(feats[2])
+            feats[3] = self.conv_p3(feats[3])
+            feats = tuple(feats)
+
+        ppm_out = self.PPM(feats[3])
+
+        e3 = self.crf3(feats[3], ppm_out)
+        e3 = nn.PixelShuffle(2)(e3)
+        e2 = self.crf2(feats[2], e3)
+        e2 = nn.PixelShuffle(2)(e2)
+        e1 = self.crf1(feats[1], e2)
+        e1 = nn.PixelShuffle(2)(e1)
+        e0 = self.crf0(feats[0], e1)
+
+        d1 = self.disp_head1(e0, 4)
+
+        depth = d1 * self.max_depth
+        
+        if mid_features:
+            return depth, feats
+        
+        return depth
+
+
+class MambaDepth_Dec_iDisc(nn.Module):
+    """
+    Depth network based on Mamba_backbone + iDisc.
+    """
+    def __init__(self, args=None, version=None, inv_depth=False, pretrained=None, remap=False, 
+                    frozen_stages=-1, min_depth=0.1, max_depth=100.0, selected_config=None, **kwargs):
+        super().__init__()
+
+        self.inv_depth = inv_depth
+        self.version = version
+        self.with_neck = False
+
+        ### encoder
+        if version == 'VSSD_final':
+            from .VSSD.mamba2_final import Backbone_VMAMBA2_Final
+            '''bulid one subset(not supernet) by config'''
+            width_multiplier = getattr(args, "width_multiplier", 1.0)
+            self.backbone = Backbone_VMAMBA2_Final(
+                image_size=(args.input_height, args.input_width),
+                patch_size=4,  # 无实际意义
+                in_chans=3,
+                embed_dim=make_divisible(64 * width_multiplier),
+                depths=selected_config['depth'],
+                num_heads=[2, 4, 8, 16],
+                mlp_ratio=selected_config['mlp_ratio'],
+                drop_rate=0.0,
+                drop_path_rate=0.2,
+                simple_downsample=False,
+                simple_patch_embed=False,
+                ssd_expansion=selected_config['ssd_expand'],
+                ssd_ngroups=1,
+                ssd_chunk_size=256,
+                linear_attn_duality=True,
+                lepe=False,
+                attn_types=['mamba2', 'mamba2', 'mamba2', 'standard'],
+                bidirection=False,
+                d_state=selected_config['d_state'],
+                ssd_positve_dA=True,
+                # pretrained weight
+                pretrained=pretrained
+            )
+            in_channels = [64, 128, 256, 512]
+            # scale channel
+            in_channels = [make_divisible(c * width_multiplier) for c in in_channels]
+        else:
+            raise NotImplementedError
+
+        self.use_proj = False
+        if getattr(args, "width_multiplier", 1.0) == 1.0 and in_channels != [64, 128, 256, 512]:
+            self.conv_p3 = nn.Conv2d(in_channels[3], 512, kernel_size=1, stride=1, padding=0)
+            self.conv_p2 = nn.Conv2d(in_channels[2], 256, kernel_size=1, stride=1, padding=0)
+            self.conv_p1 = nn.Conv2d(in_channels[1], 128, kernel_size=1, stride=1, padding=0)
+            self.conv_p0 = nn.Conv2d(in_channels[0], 64, kernel_size=1, stride=1, padding=0)
+            self.use_proj = True
+            in_channels = [64, 128, 256, 512]
+
+        
+        self.last_ch = in_channels[3]
+
+        ### decoder
+        import yaml
+        from .decoders.idisc.idisc import IDisc
+        with open("./MambaDepthNAS/networks/decoders/idisc/decoder_cfgs.yaml", "r") as f:
+            decoder_cfgs = yaml.safe_load(f)
+        
+        self.decoder = IDisc.build(decoder_cfgs)
+        
+        # self.decoder = PSP(**decoder_cfg)  # 影响一个点
+        # self.PPM = nn.Sequential(StripPooling(in_channels[3], (20,12)),
+        #                              StripPooling(in_channels[3], (20,12)))
+        # self.disp_head1 = DispHead(input_dim=crf_dims[0])
+
+        self.up_mode = 'bilinear'
+        
+        self.min_depth = min_depth
+        self.max_depth = max_depth
+        
+
+    def forward(self, imgs, mid_features=False):
+        original_shape = imgs.shape[-2:]
+        feats = self.backbone(imgs)
+
+        if self.use_proj:
+            feats = list(feats)
+            feats[0] = self.conv_p0(feats[0])
+            feats[1] = self.conv_p1(feats[1])
+            feats[2] = self.conv_p2(feats[2])
+            feats[3] = self.conv_p3(feats[3])
+            feats = tuple(feats)
+
+        # ppm_out = self.PPM(feats[3])
+        d1 = self.decoder(feats, original_shape)
+        depth = d1 * self.max_depth
+        
+        if mid_features:
+            return depth, feats
+        
+        return depth
+
+
+class MambaDepth_Dec_VMamba(nn.Module):
+    """
+    Depth network based on VSSD-T + VMamba.
+    """
+    def __init__(self, args=None, version=None, inv_depth=False, pretrained=None, remap=False, 
+                    frozen_stages=-1, min_depth=0.1, max_depth=100.0, selected_config=None, **kwargs):
+        super().__init__()
+
+        self.inv_depth = inv_depth
+        self.version = version
+        self.with_neck = False
+        # print('max_depth',max_depth)
+
+        ### encoder
+        if version == 'VSSD_final':
+            from .VSSD.mamba2_final import Backbone_VMAMBA2_Final
+            '''bulid one subset(not supernet) by config'''
+            width_multiplier = getattr(args, "width_multiplier", 1.0)
+            self.backbone = Backbone_VMAMBA2_Final(
+                image_size=(args.input_height, args.input_width),
+                patch_size=4,  # 无实际意义
+                in_chans=3,
+                embed_dim=make_divisible(64 * width_multiplier),
+                depths=selected_config['depth'],
+                num_heads=[2, 4, 8, 16],
+                mlp_ratio=selected_config['mlp_ratio'],
+                drop_rate=0.0,
+                drop_path_rate=0.2,
+                simple_downsample=False,
+                simple_patch_embed=False,
+                ssd_expansion=selected_config['ssd_expand'],
+                ssd_ngroups=1,
+                ssd_chunk_size=256,
+                linear_attn_duality=True,
+                lepe=False,
+                attn_types=['mamba2', 'mamba2', 'mamba2', 'standard'],
+                bidirection=False,
+                d_state=selected_config['d_state'],
+                ssd_positve_dA=True,
+                # pretrained weight
+                pretrained=pretrained
+            )
+            in_channels = [64, 128, 256, 512]
+            # scale channel
+            in_channels = [make_divisible(c * width_multiplier) for c in in_channels]
+        else:
+            raise NotImplementedError
+
+        self.use_proj = False
+        if getattr(args, "width_multiplier", 1.0) == 1.0 and in_channels != [64, 128, 256, 512]:
+            self.conv_p3 = nn.Conv2d(in_channels[3], 512, kernel_size=1, stride=1, padding=0)
+            self.conv_p2 = nn.Conv2d(in_channels[2], 256, kernel_size=1, stride=1, padding=0)
+            self.conv_p1 = nn.Conv2d(in_channels[1], 128, kernel_size=1, stride=1, padding=0)
+            self.conv_p0 = nn.Conv2d(in_channels[0], 64, kernel_size=1, stride=1, padding=0)
+            self.use_proj = True
+            in_channels = [64, 128, 256, 512]
+
+        ### decoder
+        final_dims = 64
+        self.last_ch = in_channels[3]
+
+        from networks.decoders.vmba.vmamba import make_Mamba_layer
+        self.vmamba3 = make_Mamba_layer(dim=in_channels[3], ssm_d_state=1, ssm_conv_bias=False,  forward_type="v05_noz", channel_first=True)
+        self.vmamba2 = make_Mamba_layer(dim=in_channels[2], ssm_d_state=1, ssm_conv_bias=False,  forward_type="v05_noz", channel_first=True)
+        self.vmamba1 = make_Mamba_layer(dim=in_channels[1], ssm_d_state=1, ssm_conv_bias=False,  forward_type="v05_noz", channel_first=True)
+        self.vmamba0 = make_Mamba_layer(dim=in_channels[0], ssm_d_state=1, ssm_conv_bias=False,  forward_type="v05_noz", channel_first=True)
+
+
+        self.proj_out3 = nn.Conv2d(in_channels[3], in_channels[3]*2, kernel_size=3, stride=1, padding=1)
+        self.proj_out2 = nn.Conv2d(in_channels[2], in_channels[2]*2, kernel_size=3, stride=1, padding=1)
+        self.proj_out1 = nn.Conv2d(in_channels[1], in_channels[1]*2, kernel_size=3, stride=1, padding=1)
+        self.proj_final = nn.Conv2d(in_channels[0], final_dims, kernel_size=3, stride=1, padding=1)
+        
+        # self.decoder = PSP(**decoder_cfg)  # 影响一个点
+        self.PPM = nn.Sequential(StripPooling(in_channels[3], (20,12)),
+                                     StripPooling(in_channels[3], (20,12)))
+        self.disp_head1 = DispHead(input_dim=final_dims)
+
+        self.up_mode = 'bilinear'
+        
+        self.min_depth = min_depth
+        self.max_depth = max_depth
+        
+
+    def forward(self, imgs, mid_features=False):
+        feats = self.backbone(imgs)
+
+        if self.use_proj:
+            feats = list(feats)  # tuple 禁止原地赋值
+            feats[0] = self.conv_p0(feats[0])
+            feats[1] = self.conv_p1(feats[1])
+            feats[2] = self.conv_p2(feats[2])
+            feats[3] = self.conv_p3(feats[3])
+            feats = tuple(feats)
+
+        ppm_out = self.PPM(feats[3])
+
+        e3 = self.vmamba3(ppm_out)
+        e3 = e3 + feats[3]
+        e3 = nn.PixelShuffle(2)(self.proj_out3(e3))
+
+        e2 = self.vmamba2(e3)
+        e2 = e2 + feats[2]
+        e2 = nn.PixelShuffle(2)(self.proj_out2(e2))
+
+        e1 = self.vmamba1(e2)
+        e1 = e1 + feats[1]
+        e1 = nn.PixelShuffle(2)(self.proj_out1(e1))
+
+        e0 = self.vmamba0(e1)
+        e0 = e0 + feats[0]
+        e0 = self.proj_final(e0)
+
+        d1 = self.disp_head1(e0, 4)
+
+        depth = d1 * self.max_depth
+        
+        if mid_features:
+            return depth, feats
+        
+        return depth
 
 class DispHead(nn.Module):
     def __init__(self, input_dim=100):

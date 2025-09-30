@@ -2,7 +2,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import os
 
-target_dir = '/data/code_yzh/DistillNAS/runs/search_nyu/run8_search_nyu_p96e150'
+target_dir = '/data/code_yzh/DistillNAS/runs/search_nyu/run22_search_random'
 # Ensure output directory exists
 output_dir = os.path.join(target_dir, 'show_evo_pics/')
 os.makedirs(output_dir, exist_ok=True)
@@ -59,8 +59,8 @@ for g in gens:
     hv = calc_hv(ref_pt, merged_F, normalized=True)
     hv_list.append(hv)
     # 必须：每轮更新历史前沿
-    front = NonDominatedSorting().do(merged_F, only_non_dominated_front=True)
-    prev_front = merged_F[front, :]
+    # front = NonDominatedSorting().do(merged_F, only_non_dominated_front=True)
+    # prev_front = merged_F[front, :]
 
 
 print(f'{target_dir} hv: {hv_list[-1]}')

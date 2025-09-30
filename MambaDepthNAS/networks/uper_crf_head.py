@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from mmcv.cnn import ConvModule
-from .newcrf_utils import resize, normal_init
+from .decoders.newcrf_utils import resize, normal_init
 
 
 class PPM(nn.ModuleList):
@@ -365,7 +365,10 @@ class PSP(BaseDecodeHead):
 
 class StripPooling(nn.Module):
     """
-    Reference: https://github.com/houqb/SPNet
+    Strip Pooling: Rethinking Spatial Pooling for Scene Parsing
+    Copyright (c) 2020 Qibin Hou
+    License: MIT License
+    Source: https://github.com/houqb/SPNet
     """
     def __init__(self, in_channels, pool_size, norm_layer=nn.BatchNorm2d):
         super(StripPooling, self).__init__()

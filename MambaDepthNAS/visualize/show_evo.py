@@ -6,7 +6,7 @@ import matplotlib.animation as animation
 GIF = False
 HV = False
 
-target_dir = '/data/code_yzh/DistillNAS/runs/search_kitti/run11_search_kitti_nokd'
+target_dir = '/data/code_yzh/DistillNAS/runs/search_nyu/run22_search_random'
 # Ensure output directory exists
 output_dir = os.path.join(target_dir, 'show_evo_pics/')
 os.makedirs(output_dir, exist_ok=True)
@@ -15,9 +15,10 @@ os.makedirs(output_dir, exist_ok=True)
 input_csv = os.path.join(target_dir, 'pop.csv')
 df = pd.read_csv(input_csv)
 max_gen = df['gen'].max()
+# max_gen = 100
 
 # Define generations to plot (e.g., every 5 generations from 1 to 50)
-gen_steps = list(range(1, max_gen + 1, 13))
+gen_steps = list(range(1, max_gen + 1, 14))
 if gen_steps[-1] != max_gen:
     gen_steps.append(max_gen)
 

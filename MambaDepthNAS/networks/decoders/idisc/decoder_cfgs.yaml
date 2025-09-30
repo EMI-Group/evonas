@@ -1,0 +1,23 @@
+model:
+  num_heads: 1
+  attn_dec: false
+  activation: gelu
+  expansion: 4
+  output_dim: 1
+  isd:
+    latent_dim: 128
+    num_resolutions: 3
+    depths: 2
+  pixel_decoder:
+    heads: 4
+    depths: 6
+    hidden_dim: 256
+    anchor_points: 8
+  pixel_encoder:
+    embed_dims: [64, 128, 256, 512]
+    lr_dedicated: 2e-05
+  afp:
+    context_low_resolutions_skip: 1
+    depths: 2
+    latent_dim: 128
+    num_latents: 32

@@ -8,7 +8,7 @@ try:
 except:
     from timm.models.layers import DropPath, to_2tuple, trunc_normal_
 
-from .newcrf_utils import load_checkpoint
+from ..decoders.newcrf_utils import load_checkpoint
 
 
 class Mlp(nn.Module):

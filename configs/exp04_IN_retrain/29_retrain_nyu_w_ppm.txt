@@ -1,14 +1,14 @@
 --teacher_config ./configs/depth_any_nyu.py
 --model_name MambaDepth_retrain
---encoder SuperNet
+--encoder VSSD_final
 --dataset nyu
 --data_path /data/dataset/NYU_Depth_V2/sync/
 --gt_path /data/dataset/NYU_Depth_V2/sync/
 --filenames_file data_splits/nyudepthv2_train_files_with_gt_dense.txt
 --batch_size 16
---num_epochs 20
---learning_rate 8e-5
---min_lr 1e-6
+--num_epochs 40
+--learning_rate 2e-4
+--min_lr 2e-6
 --warmup_lr 1e-6
 --warmup_epochs 3
 --weight_decay 0.001
@@ -19,10 +19,10 @@
 --max_depth 10
 --do_random_rotate
 --degree 2.5
---log_directory ./runs/exp06_OFA_retrain/22_retrain_nyu_small/
+--log_directory ./runs/exp04_IN_retrain/29_retrain_nyu_w_ppm/
 --multiprocessing_distributed
---dist_url tcp://127.0.0.1:2312
---devices 4,5,6,7
+--dist_url tcp://127.0.0.1:2351
+--devices 6,7
 
 --log_freq 1000
 --do_online_eval
@@ -34,12 +34,14 @@
 --max_depth_eval 10
 --eigen_crop
 
---ckpt_path /data/code_yzh/DistillNAS/runs/FT_supernet_nyu/07_depth/abs_rel_best_weight.pth
+--pretrained /data/code_yzh/VSSD-main/classification/runs/vssd_var_n_base_e300/20250812201004/best_ckpt_ema.pth
 
---mlp_ratio "[2.0, 3.5, 1.0, 1.0]"
---d_state "[48, 32, 64]"
+--mlp_ratio "[2.0, 3.5, 3.0, 3.0]"
+--d_state "[64, 48, 64]"
 --ssd_expand "[2, 3, 4]"
---depth "[[0, 1], [1, 0, 0, 0], [1, 1, 0, 1, 1, 1, 0, 0], [1, 0, 1, 0]]"
+--depth "[[0, 1], [1, 0, 1, 0], [1, 1, 1, 1, 1, 1, 1, 0], [1, 0, 1, 0]]"
+
+--neck ppm
 
 --dynamic_batch_size 1
 --kd_ratio 0.1
@@ -47,3 +49,6 @@
 --alpha_1 0.08
 --alpha_2 0.06
 --fmd_learning_rate 5e-5
+
+--width_multiplier 1.0
+--amp

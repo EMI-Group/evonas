@@ -46,6 +46,9 @@ Using **Once-for-All Progressive Shrinking**
 
 2025/9/2 update NAS Search(Change search space code order)
 
+2025/9/26 update Retrain(Support new decoders e.g. NewCRFs,iDisc,VMamba and solved weight BUG)
+
+2025/9/30 update Retrain(Support neck module choices e.g. PPM, SP and None)
 ------
 
 ##  Search Space

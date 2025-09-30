@@ -1,8 +1,11 @@
 #!/bin/bash
 
-python MambaDepthNAS/retrain.py configs/exp03_retrain/02_retrain_nyu_e20.txt
 
-sleep 3
-python MambaDepthNAS/retrain.py configs/exp03_retrain/03_retrain_nyu_e10.txt
+
+python MambaDepthNAS/retrain.py configs/exp06_OFA_retrain/nyu/01_retrain_nyu_base.txt
+
+python MambaDepthNAS/retrain.py configs/exp06_OFA_retrain/nyu/02_retrain_nyu_small.txt
+
+python MambaDepthNAS/retrain.py configs/exp06_OFA_retrain/nyu/03_retrain_nyu_tiny.txt
 
 echo "this is fine"

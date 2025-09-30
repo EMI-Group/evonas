@@ -21,11 +21,13 @@ parser.convert_arg_line_to_args = convert_arg_line_to_args
 
 parser.add_argument('--model_name',                type=str,   help='model name', default='MambaDepth')
 parser.add_argument('--encoder',                   type=str,   help='type of encoder, base07, large07', default='VSSD_final')
+parser.add_argument('--decoder',                    type=str,  help='type of decoder,', default='mamba')
+parser.add_argument('--neck',                    type=str,  help='type of module between encoder and decoder,', default='sp')
 
 # Dataset
 parser.add_argument('--dataset',                   type=str,   help='dataset to train on, kitti or nyu', default='kitti')
-parser.add_argument('--input_height',              type=int,   help='input height', default=352)
-parser.add_argument('--input_width',               type=int,   help='input width',  default=1216)
+# parser.add_argument('--input_height',              type=int,   help='input height', default=352)
+# parser.add_argument('--input_width',               type=int,   help='input width',  default=1216)
 parser.add_argument('--width_multiplier',            type=float,  default=1.0)
 
 
@@ -82,13 +84,26 @@ def main_worker(args):
         args.input_width = 640
 
     config= {}
-    config['mlp_ratio'] = [4.0, 1.0, 1.0, 2.0]
-    config['d_state'] = [48, 32, 32, -1]
-    config['ssd_expand'] = [2, 4, 2, -1]
-    config['depth'] = [1, 2, 6, 1]
+    config['mlp_ratio'] = [2.0, 3.5, 3.0, 3.0]
+    config['d_state'] = [64, 48, 64, -1]
+    config['ssd_expand'] = [2, 3, 4, -1]
+    config['depth'] = [1, 2, 7, 2]
 
     # MambaDepth model
-    model = MambaDepth(version=args.encoder, args=args, selected_config=config)
+    if args.decoder == 'mamba':
+        Model = MambaDepth
+    elif args.decoder == 'crfs':
+        from networks.model import MambaDepth_Dec_CRFs
+        Model = MambaDepth_Dec_CRFs
+    elif args.decoder == 'idisc':
+        from networks.model import MambaDepth_Dec_iDisc
+        Model = MambaDepth_Dec_iDisc
+    elif args.decoder == 'vmamba':
+        from networks.model import MambaDepth_Dec_VMamba
+        Model = MambaDepth_Dec_VMamba
+    else:
+        raise NotImplementedError
+    model = Model(version=args.encoder, args=args, selected_config=config)
     model.train()
 
     # backbone_params = list(model.backbone.parameters())
@@ -135,7 +150,7 @@ def main_worker(args):
     #                                         output_precision=2)
     #     sys.stdout = original_stdout
     #     print("net FLOPs:%s   MACs:%s   Params:%s \n" %(flops, macs, params))        
-    #     #Alexnet FLOPs:4.2892 GFLOPS   MACs:2.1426 GMACs   Params:61.1008 M 
+        #Alexnet FLOPs:4.2892 GFLOPS   MACs:2.1426 GMACs   Params:61.1008 M 
     # assert False, 'over'
 
     num_params = sum([np.prod(p.size()) for p in model.parameters()])
