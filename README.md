@@ -49,6 +49,9 @@ Using **Once-for-All Progressive Shrinking**
 2025/9/26 update Retrain(Support new decoders e.g. NewCRFs,iDisc,VMamba and solved weight BUG)
 
 2025/9/30 update Retrain(Support neck module choices e.g. PPM, SP and None)
+
+2025/10/24 update Added object detection support (supernet training, NAS search, retraining all compatible)
+
 ------
 
 ##  Search Space
@@ -117,6 +120,8 @@ sh whole_run_kitti.sh
     - [x] fixed dis_modules_s4 weight loading(not helpful)
     - [x] add mixed precision (AMP)
     - [x] add other encoders (CNN,ViT,Mamba)
+- [x] Extended to Object Detection task
+- [ ] Extended to Semantic Segmentation task
 ------
 
 ## Pipline

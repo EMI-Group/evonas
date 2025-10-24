@@ -1,0 +1,27 @@
+DetectionNAS/configs/mask_rcnn_DAMamba_fpn_1x_coco.py
+DetectionNAS/configs/mask_rcnn_swin_s_p4_w7_fpn_amp_ms_crop_3x_coco.py
+--model_name MambaDetection
+--encoder SuperNet
+--optimizer adamw
+--num_epochs 12
+--learning_rate 1e-4
+--weight_decay 0.05
+--max_norm -1
+--log_directory ./runs/coco/supernet_train_base_config/
+--multiprocessing_distributed
+--dist_url tcp://127.0.0.1:2360
+--devices 4,5,6,7
+
+--log_freq 2000
+--do_online_eval
+
+--mlp_ratio "[4.0]"
+--d_state "[64]"
+--ssd_expand "[4]"
+
+--dynamic_batch_size 1
+--kd_ratio 0.0
+--f_distill
+--alpha_1 0.002
+--alpha_2 0.0015
+--amp

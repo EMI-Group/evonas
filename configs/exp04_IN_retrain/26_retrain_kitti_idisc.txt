@@ -36,7 +36,7 @@
 --max_depth_eval 80
 --garg_crop
 
---pretrained /data/code_yzh/VSSD-main/classification/runs/vssd_var_k_base_e300/20250812201004/best_ckpt_ema.pth
+--pretrained /data/code_yzh/VSSD-main/classification/runs/vssd_var_k_base_e300/20250930163909/best_ckpt_ema.pth
 
 --mlp_ratio "[3.0, 3.5, 3.5, 4.0]"
 --d_state "[48, 32, 32]"
