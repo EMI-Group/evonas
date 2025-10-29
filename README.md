@@ -1,12 +1,47 @@
-# Mamba_DistillNAS
+# EvoXNAS
 
 Using **Once-for-All Progressive Shrinking**
 
 ------
 
+## Requirements
+
+```
+conda create -n EvoXNAS python=3.10
+conda activate EvoXNAS
+
+conda install pytorch==2.4.1 torchvision==0.19.1 torchaudio==2.4.1  pytorch-cuda=11.8 -c pytorch -c nvidia
+
+# download from https://github.com/state-spaces/mamba/releases
+pip install [/**/mamba_ssm-2.2.4+cu11torch2.4cxx11abiFALSE-cp310-cp310-linux_x86_64.whl]
+
+pip install timm==0.4.12
+pip install fvcore
+pip install tensorboardX
+pip install mmcv==2.2.0
+
+pip install Cython==3.0.12
+# donwload from https://github.com/EdwardChasel/Spatial-Mamba
+cd kernels/selective_scan && pip install .
+
+pip install numpy==2.0.1
+pip install scipy==1.15.2
+
+pip install pymoo==0.6.1.3
+pip install ptflops==0.7.4
+pip install pandas
+
+# for object detection task
+pip install mmdet==3.3.0
+
+# for semantic segmentation task
+pip install mmsegmentation==1.2.2
+pip install ftfy==6.3.1
+```
+
 ##  Update Logs
 
-2025/4/11 update SuperNet(VSSD) and Search Space
+2025/4/11 update SuperNet(Mamba) and Search Space
 
 2025/4/15 update NAS Search(Optimize d1 and params)
 
@@ -51,6 +86,8 @@ Using **Once-for-All Progressive Shrinking**
 2025/9/30 update Retrain(Support neck module choices e.g. PPM, SP and None)
 
 2025/10/24 update Added object detection support (supernet training, NAS search, retraining all compatible)
+
+2025/10/29 update Added semantic segmentation support (supernet training, NAS search, retraining all compatible)
 
 ------
 
@@ -121,7 +158,7 @@ sh whole_run_kitti.sh
     - [x] add mixed precision (AMP)
     - [x] add other encoders (CNN,ViT,Mamba)
 - [x] Extended to Object Detection task
-- [ ] Extended to Semantic Segmentation task
+- [x] Extended to Semantic Segmentation task
 ------
 
 ## Pipline

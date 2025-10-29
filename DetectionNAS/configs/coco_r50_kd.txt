@@ -20,5 +20,3 @@ DetectionNAS/configs/mask_rcnn_swin_s_p4_w7_fpn_amp_ms_crop_3x_coco.py
 --f_distill
 --alpha_1 0.002
 --alpha_2 0.0015
-
---ckpt_path ./runs/coco/run_8_r50_ddp/best_bbox_mAP.pth

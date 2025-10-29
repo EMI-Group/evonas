@@ -35,19 +35,16 @@ from typing import Dict, List, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from itertools import cycle
 
-from utils import post_process_depth, flip_lr, compute_errors, eval_metrics, \
-                       convert_arg_line_to_args, get_root_logger, unwrap_model, str2list, is_main_process, compute_metrics
+from utils import  convert_arg_line_to_args, get_root_logger, unwrap_model, str2list, is_main_process
 
 from search_space import MambaSearchSpace
 from mmengine import Config
-from mmdet.registry import MODELS
 from mmengine.evaluator import Evaluator
 from mmengine.runner.amp import autocast as mautocast
-from mmengine.registry import init_default_scope
-init_default_scope('mmdet')
-from mmdet.utils import register_all_modules
+from mmengine.registry import MODELS
+from mmseg.utils import register_all_modules
 register_all_modules(init_default_scope=True)
-from DetectionNAS.networks import model
+from SegmentNAS.networks import model
 '''
 search the best network on object dataset, e.g. COCO
 
@@ -55,12 +52,8 @@ Note: latency tests included; avoid running other GPU tasks.
 '''
 
 
-### final
-# python DetectionNAS/search.py DetectionNAS/configs/search_coco.txt
-
-### compare
-# python MambaDepthNAS/search.py configs/search/search_nyu_nokd_trained.txt
-# python MambaDepthNAS/search.py configs/search/search_kitti_nokd_trained.txt
+### start search
+# python SegmentNAS/search.py SegmentNAS/configs/upernet/01_search/search_cityscapes.txt
 
 ### clear
 # echo quit | nvidia-cuda-mps-control
@@ -125,9 +118,9 @@ def _spawn_one_gpu(idx_chunk, cfg_chunk, gpu_id):
 
     try:
         res = subprocess.run(
-            ["python", "DetectionNAS/sub_test_latency.py",
+            ["python", "SegmentNAS/sub_test_latency.py",
              "--config_file", path,
-             "--base_config", "DetectionNAS/configs/mask_rcnn_DAMamba_fpn_1x_coco.py"],
+             "--base_config", "SegmentNAS/configs/upernet_nas_subnet_cityscapes.py"],
             capture_output=True, text=True, check=True, timeout=500,
             env={**os.environ,
                  "OMP_NUM_THREADS": "1",
@@ -413,19 +406,19 @@ def worker_main_eval_func(task_q, result_q, args, cfg):
         with torch.no_grad():
             for _, eval_sample_batched in enumerate(tqdm(dataloader_eval)):
                 batched = unwrap_model(models[0]).data_preprocessor(eval_sample_batched, False)
-                with mautocast(enabled=False):  # if True, will drop 0.7~0.8 mAP
+                with mautocast(enabled=False):
                     preds = joint_model(batched)
 
                 # update eval measures
                 for i in range(n):
                     evaluators[i].process(data_samples=preds[i], data_batch=eval_sample_batched)
 
-            mAP_list = []
+            mIoU_list = []
             for i in range(n):
                 metrics_dict = evaluators[i].evaluate(len(dataloader_eval.dataset))
-                mAP_list.append(metrics_dict['coco/bbox_mAP'])
+                mIoU_list.append(metrics_dict['mIoU'])
         
-        result_q.put((start_idx, mAP_list))
+        result_q.put((start_idx, mIoU_list))
         torch.cuda.empty_cache()
     
     torch.cuda.empty_cache()
@@ -502,11 +495,11 @@ class NasProblem(Problem):
         for start in range(0, n, self.batch):
             self.task_q.put((start, sample_config_list[start: start + self.batch]))
 
-        map_list = [None] * n
+        mIoU_list = [None] * n
         num_batches = (n + self.batch - 1) // self.batch
         for _ in range(num_batches):
             start_idx, objs_batch = self.result_q.get()
-            map_list[start_idx: start_idx + len(objs_batch)] = objs_batch
+            mIoU_list[start_idx: start_idx + len(objs_batch)] = objs_batch
 
         eval_cost_time = time.time() - eval_s_time
         lat_s_time = time.time()
@@ -514,7 +507,7 @@ class NasProblem(Problem):
         latency_list, macs_list = self.latency_func(sample_config_list=sample_config_list)
         lat_cost_time = time.time() - lat_s_time
 
-        self.logger.info(f"pop_mAP = {[round(float(map), 4) for map in map_list]}")
+        self.logger.info(f"pop_mIoU = {[round(float(miou), 4) for miou in mIoU_list]}")
         self.logger.info(f"pop_latency = {[round(float(lat), 4) for lat in latency_list]}")
         self.logger.info(f"pop_mac_g = {[round(float(mac), 4) for mac in macs_list]}")
 
@@ -524,18 +517,18 @@ class NasProblem(Problem):
         self.logger.info(f'[Gen {gen}] eval_cost_time: {eval_cost_time:.2f}s')
         self.logger.info(f'[Gen {gen}] lat_cost_time: {lat_cost_time:.2f}s')
 
-        for i, (_x, map, lat, mac) in enumerate(zip(x, map_list, latency_list, macs_list)):
-            f[i, 0] = 1.0 - map  # box_mAP is to be maximized
+        for i, (_x, miou, lat, mac) in enumerate(zip(x, mIoU_list, latency_list, macs_list)):
+            f[i, 0] = 1.0 - miou  # mIoU is to be maximized
             f[i, 1] = lat
             f[i, 2] = mac
 
         out["F"] = f
         
-        map_np = np.array(map_list, dtype=np.float32)
+        miou_np = np.array(mIoU_list, dtype=np.float32)
         latency_np = np.array(latency_list, dtype=np.float32)
         macs_np    = np.array(macs_list, dtype=np.float32)
 
-        self.logger.info(f"[Gen {gen}] (New_Pop) box_mAP: mean={map_np.mean():.4f}, min={map_np.min():.4f}, max={map_np.max():.4f}")
+        self.logger.info(f"[Gen {gen}] (New_Pop) box_mIoU: mean={miou_np.mean():.4f}, min={miou_np.min():.4f}, max={miou_np.max():.4f}")
         self.logger.info(f"[Gen {gen}] (New_Pop) latency: mean={latency_np.mean():.4f}, min={latency_np.min():.4f}, max={latency_np.max():.4f}")
         self.logger.info(f"[Gen {gen}] (New_Pop) macs_g: mean={macs_np.mean():.4f}, min={macs_np.min():.4f}, max={macs_np.max():.4f}")
 
@@ -559,11 +552,11 @@ class EvolutionLogger(Callback):
         self.data.setdefault("pop_x", []).append(X.tolist())
 
         if self.logger:
-            metrics = ["box_mAP", "latency", "macs_g"]
+            metrics = ["mIoU", "latency", "macs_g"]
             for i, name in enumerate(metrics):
                 vals = F[:, i]
-                if name == "box_mAP":
-                    vals = 1.0 - vals  # convert back to box_mAP
+                if name == "mIoU":
+                    vals = 1.0 - vals  # convert back to mIoU
                 self.logger.info(
                     f"[Gen {algorithm.n_gen}] (Updated_Pop) {name}: mean={vals.mean():.4f}, min={vals.min():.4f}, max={vals.max():.4f}"
                 )
@@ -577,7 +570,7 @@ class EvolutionLogger(Callback):
                 config = self.ss.decode(x)
                 row = {
                     "gen": gen + 1,
-                    "box_mAP": round(1.0 - f[0], 4),
+                    "mIoU": round(1.0 - f[0], 4),
                     "latency": round(f[1], 4),
                     "macs": round(f[2], 4),
                     "config": str(config).replace("\n", "")
@@ -679,7 +672,7 @@ def main():
 
     logger.info("Optimal Objective Values:")
     for id, val in enumerate(optimal_objective_values):
-        logger.info(f"id:{id}, box_mAP={1.0 - val[0]:.4f}, latency={val[1]:.1f}ms, MACs={val[2]:.1f}G")
+        logger.info(f"id:{id}, mIoU={1.0 - val[0]:.4f}, latency={val[1]:.1f}ms, MACs={val[2]:.1f}G")
 
     logger.info("Optimal Config:")
     for id, conf in enumerate(optimal_solutions):

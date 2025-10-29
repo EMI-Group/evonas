@@ -227,14 +227,14 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
         if args.gpu is not None:
             torch.cuda.set_device(args.gpu)
             model.cuda(args.gpu)
-            model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=True, broadcast_buffers=True)
+            model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=True, broadcast_buffers=False)
             if args.kd_ratio > 0 or args.f_distill:
                 teacher_model.cuda(args.gpu)
                 teacher_model = torch.nn.parallel.DistributedDataParallel(teacher_model, device_ids=[args.gpu], broadcast_buffers=False)
             if args.f_distill: 
                 dis_modules_s4.init_weights()
                 dis_modules_s4.cuda(args.gpu)
-                dis_modules_s4 = torch.nn.parallel.DistributedDataParallel(dis_modules_s4, device_ids=[args.gpu], find_unused_parameters=True, broadcast_buffers=True)
+                dis_modules_s4 = torch.nn.parallel.DistributedDataParallel(dis_modules_s4, device_ids=[args.gpu], find_unused_parameters=True, broadcast_buffers=False)
         else:
             assert False, 'developing'
     else:
@@ -263,9 +263,14 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
         'dataset.metainfo 为空或缺少 classes，请在数据集里补全 METAINFO/metainfo。'
     evaluator.dataset_meta = dataset_meta
 
+    model_module = unwrap_model(model)
+    for m in model_module.modules():
+        if isinstance(m, nn.BatchNorm2d):
+            m.eval()  # 切换到 eval 模式 -> 不再更新统计
+            m.weight.requires_grad = False  # 不更新 γ
+            m.bias.requires_grad = False    # 不更新 β
 
     ################## build optimizer ######################
-    model_module = unwrap_model(model)
     optimizer = build_optimizer(args, model_module, logger, dis_modules_s4)
         
     scaler = GradScaler(enabled=args.amp)
@@ -329,6 +334,7 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
         features['feat_T_s4'] = output[3]
 
     ################### train loop ########################
+    model.train()
     while epoch < args.num_epochs:
         if args.distributed:
             # dataloader.sampler.set_epoch(epoch)

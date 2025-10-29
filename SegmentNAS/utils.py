@@ -13,6 +13,7 @@ import torch
 import random
 import argparse
 import shlex
+from torch.optim.lr_scheduler import LinearLR, PolynomialLR, SequentialLR
 
 def convert_arg_line_to_args(arg_line):
     return shlex.split(arg_line)
@@ -503,3 +504,56 @@ def build_iter_lambda_scheduler(optimizer, *,
         return factor
 
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
+
+
+def build_iter_poly_scheduler(optimizer,
+                              warmup_iters=1500,
+                              total_iters=160000,
+                              start_factor=1e-6,
+                              power=1.0):
+    """Linear warmup + Polynomial LR decay (by iteration)
+
+    Args:
+        optimizer: torch optimizer
+        warmup_iters (int): warmup iterations
+        total_iters (int): max iterations (warmup + decay)
+        start_factor (float): warmup start_factor
+        power (float): Poly decay power
+        eta_min (float): minimum learning rate
+    """
+    
+    # --- Linear warmup ---
+    sched_warmup = LinearLR(
+        optimizer,
+        start_factor=start_factor,
+        total_iters=warmup_iters,
+    )
+
+    # --- PolyLR decay ---
+    poly_iters = total_iters - warmup_iters
+    if poly_iters <= 0:
+        raise ValueError("total_iters must be larger than warmup_iters")
+
+    sched_poly = PolynomialLR(
+        optimizer,
+        total_iters=poly_iters,
+        power=power,
+    )
+
+    # --- Combine ---
+    scheduler = SequentialLR(
+        optimizer,
+        schedulers=[sched_warmup, sched_poly],
+        milestones=[warmup_iters],
+    )
+    return scheduler
+
+
+def pad_to_multiple(x, n=14, pad_value=0.0):
+    B, C, H, W = x.shape
+    Hn = (H + n - 1) // n * n   # 向上取整
+    Wn = (W + n - 1) // n * n
+    ph, pw = Hn - H, Wn - W
+    if ph > 0 or pw > 0:
+        x = torch.nn.functional.pad(x, (0, pw, 0, ph), value=pad_value)  # 右/下补
+    return x, ph, pw

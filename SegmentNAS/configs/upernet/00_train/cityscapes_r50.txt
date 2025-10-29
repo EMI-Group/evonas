@@ -1,0 +1,17 @@
+SegmentNAS/configs/upernet/upernet_r50_4xb2_40k_cityscapes_512x1024.py
+--model_name resnet
+--optimizer sgd
+--num_epochs 12
+--learning_rate 0.02
+--weight_decay 1e-4
+--max_norm -1
+--log_directory ./runs/cityscapes/run_debug/
+--multiprocessing_distributed
+--dist_url tcp://127.0.0.1:2369
+--devices 0,1,2,3
+
+--log_freq 2500
+--do_online_eval
+
+--dynamic_batch_size 1
+--kd_ratio 0.0

@@ -1,4 +1,4 @@
-DetectionNAS/configs/mask_rcnn_DAMamba_fpn_1x_coco.py
+DetectionNAS/configs/mask_rcnn_mamba_2xb4_fpn_1x_coco.py
 DetectionNAS/configs/mask_rcnn_swin_s_p4_w7_fpn_amp_ms_crop_3x_coco.py
 --model_name MambaDetection
 --optimizer adamw

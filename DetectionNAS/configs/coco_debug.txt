@@ -1,4 +1,4 @@
-DetectionNAS/configs/mask_rcnn_DAMamba_fpn_1x_coco_debug.py
+DetectionNAS/configs/mask_rcnn_DAMamba_fpn_1x_coco.py
 --model_name MambaDetection
 --encoder SuperNet
 --optimizer adamw
@@ -8,8 +8,8 @@ DetectionNAS/configs/mask_rcnn_DAMamba_fpn_1x_coco_debug.py
 --max_norm -1
 --log_directory ./runs/coco/run_debug_maxnet/
 --multiprocessing_distributed
---dist_url tcp://127.0.0.1:2361
---devices 4,5,6,7
+--dist_url tcp://127.0.0.1:2369
+--devices 0,1,2,3
 
 --log_freq 2500
 --do_online_eval
@@ -17,7 +17,7 @@ DetectionNAS/configs/mask_rcnn_DAMamba_fpn_1x_coco_debug.py
 --mlp_ratio "[4.0]"
 --d_state "[64]"
 --ssd_expand "[4]"
---ckpt_path /data/code_yzh/DistillNAS/runs/coco/run_debug_maxnet/MambaDetection/model-2749-best_coco_bbox_mAP_0.72300
+--ckpt_path /data/code_yzh/DistillNAS/runs/coco/FT_supernet_coco/00_maxnet/best_bbox_mAP.pth
 
 --kd_ratio 0.0
 --amp

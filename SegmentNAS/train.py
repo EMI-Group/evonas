@@ -20,28 +20,26 @@ from tensorboardX import SummaryWriter
 
 from utils import barrier, block_print, enable_print, build_optimizer, \
                        convert_arg_line_to_args, get_root_logger, unwrap_model, str2list
-from DetectionNAS.networks import model
+from SegmentNAS.networks import model
 from search_space import MambaSearchSpace
 from torch.amp import autocast, GradScaler
 
-from utils import build_iter_lambda_scheduler
-from mmdet.registry import MODELS, METRICS  
+from utils import build_iter_lambda_scheduler, build_iter_poly_scheduler, pad_to_multiple
+from SegmentNAS.networks.depth_anything import dinov2
+from mmengine.registry import MODELS 
 from mmengine.evaluator import Evaluator
-from torch.utils.data import DataLoader
-from mmengine.registry import init_default_scope
-init_default_scope('mmdet')
 from mmengine.runner import Runner, load_checkpoint
 from mmengine.runner.amp import autocast as mautocast
-from mmdet.utils import register_all_modules
+from mmseg.utils import register_all_modules
 register_all_modules(init_default_scope=True)
 
-'''fine-tune supernet on object dataset, e.g. COCO'''
+'''fine-tune supernet on object dataset, e.g. Cityscapes'''
 
 ### develop
-# python DetectionNAS/train.py DetectionNAS/configs/coco_nas_kd.txt 
+# python SegmentNAS/train.py SegmentNAS/configs/upernet/00_train/cityscapes_nas.txt
 
 ### final
-# sh scripts/detection/supernet_steptrain.sh
+# sh scripts/segment/supernet_steptrain.sh
 
 def parse_args():
     parser = argparse.ArgumentParser(description='MambaDetection PyTorch implementation.', fromfile_prefix_chars='@')
@@ -50,7 +48,6 @@ def parse_args():
     parser.add_argument('config',              help='train config file path')
     parser.add_argument('teacher_config', nargs='?', default=None, help='teacher config file path (optional)')
     parser.add_argument('--model_name',                type=str,   help='model name', default='MambaDepth')
-    parser.add_argument('--encoder',                   type=str,   help='type of encoder, base07, large07', default='SuperNet')
     parser.add_argument('--pretrain',                  type=str,   help='path of pretrained encoder', default=None)
     parser.add_argument('--devices',                    type=str, default='0,1', help='CUDA_VISIBLE_DEVICES value, e.g., "0" or "0,1"')
 
@@ -114,7 +111,7 @@ def online_eval(args, model, dataloader_eval, evaluator=None, logger=None, ss=No
         # random sample subnet
         sample_config = ss.sample(n_samples=1)[0]
         model_module = unwrap_model(model)
-        model_module.backbone.backbone.set_sample_config(sample_config=sample_config)  # TODO
+        model_module.backbone.backbone.set_sample_config(sample_config=sample_config)
         with mautocast(enabled=False):
             preds = model_module.val_step(eval_sample_batched)
         evaluator.process(data_samples=preds, data_batch=eval_sample_batched)
@@ -144,26 +141,26 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
     if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
         logger.info('args: '+str(args))
 
-    # model = MambaDepth(args, version=args.encoder, inv_depth=False, max_depth=args.max_depth, pretrained=args.pretrain, remap=args.remap)
     model = MODELS.build(cfg.model)
+    model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
     model.init_weights()
     model.train()
     
-    # load_checkpoint(model, './checkpoints/mask_rcnn_swin-s-p4-w7_fpn_fp16_ms-crop-3x_coco_20210903_104808-b92c91f1.pth', map_location='cpu')
+    # load_checkpoint(model, '/data/code_yzh/DistillNAS/checkpoints/cityscapes_vitl_mIoU_86.4.pth', map_location='cpu')
 
     ### teacher model
     if args.kd_ratio > 0 or args.f_distill:
         t_cfg = Config.fromfile(args.teacher_config)
         teacher_model = MODELS.build(t_cfg.model)
-        load_checkpoint(teacher_model, './checkpoints/mask_rcnn_swin-s-p4-w7_fpn_fp16_ms-crop-3x_coco_20210903_104808-b92c91f1.pth', map_location='cpu')
+        load_checkpoint(teacher_model, './checkpoints/cityscapes_vitl_mIoU_86.4.pth', map_location='cpu')
         logger.info("Successed loading weights for teacher model")
     
     from distillation.fmdv2 import FreqMaskingDistillLossv2
     dis_modules_s4 = FreqMaskingDistillLossv2(
         alpha=[args.alpha_1, args.alpha_2],
         student_dims=512, # student feature dimension
-        teacher_dims=768,  # teacher feature dimension
-        pos_dims=768,  # same to teacher_dims
+        teacher_dims=1024,  # teacher feature dimension
+        pos_dims=1024,  # same to teacher_dims
         self_query=True,
         softmax_scale=[5.,5.],
         num_heads=16
@@ -186,9 +183,8 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
 
         parts = {
             "backbone": getattr(model, "backbone", None),
-            "neck": getattr(model, "neck", None),
-            "rpn_head": getattr(model, "rpn_head", None),
-            "roi_head": getattr(model, "roi_head", None),
+            "decode_head": getattr(model, "decode_head", None),
+            "auxiliary_head": getattr(model, "auxiliary_head", None),
         }
 
         used = set()
@@ -211,14 +207,14 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
         if args.gpu is not None:
             torch.cuda.set_device(args.gpu)
             model.cuda(args.gpu)
-            model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=True, broadcast_buffers=True)
+            model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=True, broadcast_buffers=False)
             if args.kd_ratio > 0 or args.f_distill:
                 teacher_model.cuda(args.gpu)
                 teacher_model = torch.nn.parallel.DistributedDataParallel(teacher_model, device_ids=[args.gpu], broadcast_buffers=False)
             if args.f_distill: 
                 dis_modules_s4.init_weights()
                 dis_modules_s4.cuda(args.gpu)
-                dis_modules_s4 = torch.nn.parallel.DistributedDataParallel(dis_modules_s4, device_ids=[args.gpu], find_unused_parameters=True, broadcast_buffers=True)
+                dis_modules_s4 = torch.nn.parallel.DistributedDataParallel(dis_modules_s4, device_ids=[args.gpu], find_unused_parameters=True, broadcast_buffers=False)
         else:
             assert False, 'developing'
     else:
@@ -247,9 +243,16 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
         'dataset.metainfo 为空或缺少 classes，请在数据集里补全 METAINFO/metainfo。'
     evaluator.dataset_meta = dataset_meta
 
-
-    ################## build optimizer ######################
     model_module = unwrap_model(model)
+    for m in model_module.modules():
+        # if isinstance(m, nn.BatchNorm2d):
+        #     m.eval()  # 切换到 eval 模式 -> 不再更新统计
+        #     m.weight.requires_grad = False  # 不更新 γ
+        #     m.bias.requires_grad = False    # 不更新 β:
+        if isinstance(m, nn.ReLU):  # TODO
+            m.inplace = False
+            
+    ################## build optimizer ######################
     optimizer = build_optimizer(args, model_module, logger, dis_modules_s4)
         
     scaler = GradScaler(enabled=args.amp)
@@ -271,7 +274,7 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
             eval_summary_writer = SummaryWriter(eval_summary_path, flush_secs=30)
 
     global_step = -1
-    key_metrics = ['coco/bbox_mAP', 'coco/segm_mAP']
+    key_metrics = ['mIoU']
     best_vals = {k: float('-inf') for k in key_metrics}
     best_steps = {k: -1 for k in key_metrics}
 
@@ -287,24 +290,18 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
 
     steps_per_epoch = len(dataloader)
     num_total_steps = args.num_epochs * steps_per_epoch
-    epoch = 0  # need equal to global_step // steps_per_epoch if resume
+    epoch = 0
+    logger.info("== Total training steps: {}".format(num_total_steps))
 
-    scheduler = build_iter_lambda_scheduler(
+    scheduler = build_iter_poly_scheduler(
         optimizer,
-        warmup_iters=1000,
-        warmup_ratio=0.001,
-        milestones=(8, 11) if args.num_epochs==12 else (max(1, int(args.num_epochs*0.67)),),
-        iters_per_epoch=steps_per_epoch,
-        gamma=0.1
+        warmup_iters=1500 if num_total_steps > 30000 else int(0.05 * num_total_steps),
+        total_iters=num_total_steps,
+        start_factor=1e-6,
+        power=1.0
     )
-    # from torch.optim.lr_scheduler import MultiStepLR
-    # scheduler = MultiStepLR(
-    #     optimizer,
-    #     milestones=[8, 11],
-    #     gamma=0.1
-    # )
 
-    # with open('./detection_model_nas.log', 'w') as f:
+    # with open('./segment_model_depthanything.log', 'w') as f:
     #     f.write(str(model))
     # assert False,'debug'
 
@@ -315,6 +312,7 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
         features['feat_T_s4'] = output[3]
 
     ################### train loop ########################
+    model.train()
     while epoch < args.num_epochs:
         if args.distributed:
             # dataloader.sampler.set_epoch(epoch)
@@ -328,22 +326,26 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
             before_op_time = time.time()
             global_step += 1
 
+            model_module = unwrap_model(model)
+            batched = model_module.data_preprocessor(sample_batched, True)
+
             if args.kd_ratio > 0 or args.f_distill:
                 with torch.no_grad():
                     teacher_model.eval()
                     with autocast(device_type='cuda', dtype=torch.float16, enabled=args.amp):
-                        model_module = unwrap_model(teacher_model)
-                        handle_T = model_module.backbone.register_forward_hook(hook_fn_T)
-                        tearcher_preds = model_module.val_step(sample_batched)
+                        t_module = unwrap_model(teacher_model)
+                        handle_T = t_module.backbone.register_forward_hook(hook_fn_T)
+                        fix_inputs, ph, pw = pad_to_multiple(batched['inputs'], n=14, pad_value=0.0)
+                        _ = t_module.extract_feat(fix_inputs)
+                    if args.f_distill:
+                        feat_T_s4 = features.pop('feat_T_s4')
+                        # feat_T_s4 = feat_T_s4[:,:,feat_T_s4.shape[-2]-1, feat_T_s4.shape[-1]-1]
                         
 
             for _ in range(args.dynamic_batch_size):
                 with autocast(device_type='cuda', dtype=torch.float16, enabled=args.amp):
                     # random sample subnet
-                    sample_config = ss.sample(n_samples=1)[0]
-                    model_module = unwrap_model(model)
-                    model_module.backbone.backbone.set_sample_config(sample_config=sample_config)  # TODO
-                    batched = model_module.data_preprocessor(sample_batched, True)
+                    model_module.backbone.backbone.set_sample_config(sample_config=ss.sample(n_samples=1)[0])
                     if args.f_distill:
                         # handle_S = model_module.backbone.layer4.register_forward_hook(hook_fn_S)  # for resnet50
                         handle_S = model_module.backbone.register_forward_hook(hook_fn_S)
@@ -363,7 +365,6 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
                     freq_loss = torch.tensor(0.0).cuda(args.gpu)
                     kd_loss = torch.tensor(0.0).cuda(args.gpu)
                     if args.f_distill:
-                        feat_T_s4 = features.pop('feat_T_s4')
                         feat_S_s4 = features.pop('feat_S_s4')
 
                         # # 检查类型是否为 list 或 tuple
@@ -387,8 +388,9 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
 
                         # [Teacher] single tensor, shape=(1, 768, 24, 42)
                         # [Student] single tensor, shape=(1, 512, 24, 42)
-
-                        spat_loss, freq_loss = dis_modules_s4(feat_S_s4, feat_T_s4)
+                        alig_feat_T_s4  = torch.nn.functional.interpolate(
+                            feat_T_s4, size=(feat_S_s4.shape[2], feat_S_s4.shape[3]), mode='bilinear', align_corners=False)
+                        spat_loss, freq_loss = dis_modules_s4(feat_S_s4, alig_feat_T_s4)
                         handle_T.remove()
                         handle_S.remove()
 
@@ -449,7 +451,7 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
                     writer.add_scalar('var_average', var_sum.item()/var_cnt, global_step)
 
 
-        if args.do_online_eval:
+        if args.do_online_eval and (epoch % 10 == 0 or epoch == args.num_epochs - 1):
             barrier()
             time.sleep(0.1)
             metrics_dict = online_eval(args, model, dataloader_eval, evaluator=evaluator, logger=logger, ss=ss)
@@ -461,7 +463,7 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
                 eval_summary_writer.flush()
 
                 if metrics_dict is not None:
-                    for metric_name in ['coco/bbox_mAP', 'coco/segm_mAP']:
+                    for metric_name in key_metrics:
                         curr = float(metrics_dict[metric_name])
                         is_best = False
                         if curr >= best_vals[metric_name]:
@@ -493,10 +495,9 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
                             }
                             torch.save(checkpoint, save_path)
 
-                        if is_best and metric_name == 'coco/bbox_mAP':
+                        if is_best and metric_name == 'mIoU':
                             link_map = {
-                                'coco/bbox_mAP': 'best_bbox_mAP.pth',
-                                'coco/segm_mAP': 'best_segm_mAP.pth'
+                                'mIoU': 'best_mIoU.pth',
                             }
                             link_name = link_map[metric_name]
                             symlink_path = os.path.join(args.log_directory, link_name)
@@ -527,7 +528,7 @@ def main():
     os.system(command)
 
     args_out_path = os.path.join(args.log_directory, args.model_name)
-    command = 'cp ' + sys.argv[1] + ' ' + args_out_path
+    command = 'cp ' + sys.argv[1][1:] + ' ' + args_out_path
     os.system(command)
 
     save_files = True

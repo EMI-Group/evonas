@@ -4,14 +4,12 @@ import argparse
 import gc
 from ptflops import get_model_complexity_info
 import time
-from mmdet.registry import MODELS
-from networks.model import MambaDetection
-from mmengine.registry import init_default_scope
-init_default_scope('mmdet')
-from mmdet.utils import register_all_modules
-register_all_modules(init_default_scope=True)
+from mmengine.registry import MODELS
+from networks.model import MambaBackbone
 from mmengine import Config
-from mmdet.structures import DetDataSample
+from mmseg.structures import SegDataSample
+from mmseg.utils import register_all_modules
+register_all_modules(init_default_scope=True)
 import copy
 ''' Dont change any during searching !'''
 
@@ -39,14 +37,14 @@ def test_latency_mac(model, input_shape=(1,3,224,224), device='cuda', warmup=30,
     input_tensor = torch.randn(*input_shape).to(device)
     N, C, H, W = input_tensor.shape
     meta = {
-        'img_shape': (H, W, C),
-        'ori_shape': (H, W, C),
-        'pad_shape': (H, W, C),
-        'scale_factor': (1.0, 1.0, 1.0, 1.0),
+        'img_shape': (H, W),
+        'ori_shape': (H, W),
+        'pad_shape': (H, W),
+        'scale_factor': (1.0, 1.0,),
         'flip': False,
         'flip_direction': None,
     }
-    data_samples = [DetDataSample(metainfo=meta) for _ in range(N)]
+    data_samples = [SegDataSample(metainfo=meta) for _ in range(N)]
 
     # warmup
     for _ in range(warmup):
@@ -83,11 +81,10 @@ def main():
     cfg = Config.fromfile(args.base_config)
     # print("Parsed dict:", config_list)
 
-    input_shape = (1,3,800,1344)
+    input_shape = (1,3,512,1024)
 
     results = []
     for config in config_list:
-        # model = MambaDepth(args=args, version='VSSD_final', selected_config=config)
         model_cfg = copy.deepcopy(cfg.model)
         model_cfg.backbone.version = 'VSSD_final'
         model_cfg.backbone.selected_config = config
@@ -109,7 +106,7 @@ def main():
 
     print(json.dumps(results))
 
-# CUDA_VISIBLE_DEVICES=4 python DetectionNAS/sub_test_latency.py --config_file /data/code_yzh/DistillNAS/tmp/tmpabcd_GPU0.json --base_config DetectionNAS/configs/mask_rcnn_DAMamba_fpn_1x_coco.py
+# CUDA_VISIBLE_DEVICES=5 python SegmentNAS/sub_test_latency.py --config_file /data/code_yzh/DistillNAS/tmp/tmpabcd_GPU0.json --base_config SegmentNAS/configs/upernet/upernet_nas_subnet_cityscapes.py
 
 if __name__ == "__main__":
     main()

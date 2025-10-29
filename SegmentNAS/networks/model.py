@@ -8,15 +8,15 @@ from .uper_crf_head import PSP, StripPooling
 
 from .SpaMamba.spatialmamba import SpatialMambaLayer
 
-from mmdet.registry import MODELS
+from mmseg.registry import MODELS
 from mmengine.model import BaseModule
+from mmseg.models.decode_heads.decode_head import BaseDecodeHead
+from mmseg.models.utils import resize
+from mmcv.cnn import ConvModule
 ########################################################################################################################
 
 @MODELS.register_module()
-class MambaDetection(nn.Module):
-    """
-    network based on VSSD-T + SpatialMamba.
-    """
+class MambaBackbone(nn.Module):
     def __init__(self, version=None, pretrained=None, remap=False, input_height=-1, input_width=-1, 
                  width_multiplier=1.0, selected_config=None, **kwargs):
         super().__init__()
@@ -51,35 +51,6 @@ class MambaDetection(nn.Module):
                 # pretrained weight
                 pretrained=None,  # after
                 remap=remap
-            )
-            in_channels = [64, 128, 256, 512]
-
-        elif version == 'VSSD':
-            from .VSSD.mamba2_fixed import Backbone_VMAMBA2_Fixed
-            '''fixed arch'''
-            self.backbone = Backbone_VMAMBA2_Fixed(
-                image_size=(input_height, input_width),
-                patch_size=4,  # 无实际意义
-                in_chans=3,
-                embed_dim=64,
-                depths=[2, 4, 8, 4],  # note
-                num_heads=[2, 4, 8, 16],
-                mlp_ratio=4.0,  # note
-                drop_rate=0.0,
-                drop_path_rate=0.2,
-                simple_downsample=False,
-                simple_patch_embed=False,
-                ssd_expansion=2,  # note
-                ssd_ngroups=1,
-                ssd_chunk_size=256,
-                linear_attn_duality=True,
-                lepe=False,
-                attn_types=['mamba2', 'mamba2', 'mamba2', 'standard'],
-                bidirection=False,
-                d_state=64,  # note
-                ssd_positve_dA=True,
-                # pretrained weight
-                pretrained=None  # after
             )
             in_channels = [64, 128, 256, 512]
         
@@ -143,57 +114,44 @@ class MambaDetection(nn.Module):
 
 
 @MODELS.register_module()
-class MambaFPN(nn.Module):
-    def __init__(self, in_channels, out_channels, neck_type='sp', **kwargs):
-        super().__init__()
-
-        ### decoder
-        embed_dim = 512
+class UPerHead_with_mamba(BaseDecodeHead):
+    def __init__(self, in_channels=[64, 128, 256, 512], **kwargs):
+        super().__init__(in_channels=in_channels, input_transform='multiple_select', **kwargs)
+        # PSP Module
+        self.PPM = nn.Sequential(StripPooling(in_channels[3], (20,12)),
+                                StripPooling(in_channels[3], (20,12)))
+        self.fpn_bottleneck = ConvModule(
+            len(self.in_channels) * self.channels,
+            self.channels,
+            3,
+            padding=1,
+            conv_cfg=self.conv_cfg,
+            norm_cfg=self.norm_cfg,
+            act_cfg=self.act_cfg)
+        
+        ### FPN
         final_dims = 64
         depths = [1,1,1,1]
         self.last_ch = in_channels[3]
 
-        self.spa_mab3 = SpatialMambaLayer(dim=in_channels[3], depth=depths[0], d_state=1, mlp_ratio=4.0)
-        self.spa_mab2 = SpatialMambaLayer(dim=in_channels[2], depth=depths[1], d_state=1, mlp_ratio=4.0)
-        self.spa_mab1 = SpatialMambaLayer(dim=in_channels[1], depth=depths[2], d_state=1, mlp_ratio=4.0)
-        self.spa_mab0 = SpatialMambaLayer(dim=in_channels[0], depth=depths[3], d_state=1, mlp_ratio=4.0)
+        self.spa_mab3 = SpatialMambaLayer(dim=in_channels[3], depth=depths[0], d_state=1)
+        self.spa_mab2 = SpatialMambaLayer(dim=in_channels[2], depth=depths[1], d_state=1)
+        self.spa_mab1 = SpatialMambaLayer(dim=in_channels[1], depth=depths[2], d_state=1)
+        self.spa_mab0 = SpatialMambaLayer(dim=in_channels[0], depth=depths[3], d_state=1)
 
         self.proj_out3 = nn.Conv2d(in_channels[3], in_channels[3]*2, kernel_size=3, stride=1, padding=1)
         self.proj_out2 = nn.Conv2d(in_channels[2], in_channels[2]*2, kernel_size=3, stride=1, padding=1)
         self.proj_out1 = nn.Conv2d(in_channels[1], in_channels[1]*2, kernel_size=3, stride=1, padding=1)
         self.proj_final = nn.Conv2d(in_channels[0], final_dims, kernel_size=1, stride=1, padding=0)
-        
-        self.neck_type = neck_type
-        if self.neck_type == 'sp':
-            self.PPM = nn.Sequential(StripPooling(in_channels[3], (20,12)),
-                                     StripPooling(in_channels[3], (20,12)))
-        elif self.neck_type == 'ppm':
-            decoder_cfg = dict(
-                in_channels=in_channels,
-                in_index=[0, 1, 2, 3],
-                pool_scales=(1, 2, 3, 6),
-                channels=embed_dim,
-                dropout_ratio=0.0,
-                num_classes=32,
-                norm_cfg=dict(type='BN', requires_grad=True),
-                align_corners=False
-            )
-            self.PPM = PSP(**decoder_cfg)
-        else:
-            self.PPM = nn.Identity()
             
-        self.conv_p3 = nn.Conv2d(in_channels[3]//2, out_channels, kernel_size=1)
-        self.conv_p2 = nn.Conv2d(in_channels[2]//2, out_channels, kernel_size=1)
-        self.conv_p1 = nn.Conv2d(in_channels[1]//2, out_channels, kernel_size=1)
-        self.conv_p0 = nn.Conv2d(final_dims, out_channels, kernel_size=1)
-        self.max_pool = nn.MaxPool2d(kernel_size=1, stride=2)
-    
+        self.conv_p3 = nn.Conv2d(in_channels[3]//2, self.channels, kernel_size=1)
+        self.conv_p2 = nn.Conv2d(in_channels[2]//2, self.channels, kernel_size=1)
+        self.conv_p1 = nn.Conv2d(in_channels[1]//2, self.channels, kernel_size=1)
+        self.conv_p0 = nn.Conv2d(final_dims, self.channels, kernel_size=1)
 
-    def forward(self, feats):
-        if self.neck_type == 'ppm':
-            ppm_out = self.PPM(feats)
-        else:
-            ppm_out = self.PPM(feats[3])
+
+    def _forward_feature(self, feats):
+        ppm_out = self.PPM(feats[3])
 
         e3 = self.spa_mab3(ppm_out)
         e3 = e3 + feats[3]
@@ -215,16 +173,35 @@ class MambaFPN(nn.Module):
         e1 = self.conv_p1(e1)  #  W/8
         e2 = self.conv_p2(e2)  #  W/16
         e3 = self.conv_p3(e3)  #  W/32
-        ee = self.max_pool(e3)   #  W/64
 
-        out = (e0, e1, e2, e3, ee)
-        return out
+        # ====== 严格对齐 UPerHead 的做法：对齐到 fpn_outs[0] 的空间尺寸，然后通道拼接 ======
+        fpn_outs = [e0, e1, e2, e3]             # 顺序与 UPerHead 一致：最浅层在前
+        base_size = fpn_outs[0].shape[2:]       # 以最高分辨率 e0 为基准尺寸
 
+        # 与 UPerHead 相同的循环方向（从后往前），逐个 resize 到 base_size
+        for i in range(len(fpn_outs) - 1, 0, -1):
+            fpn_outs[i] = resize(
+                fpn_outs[i],
+                size=base_size,
+                mode='bilinear',
+                align_corners=self.align_corners
+            )
 
-def upsample(x, scale_factor=2, mode="bilinear", align_corners=False):
-    """Upsample input tensor by a factor of 2
-    """
-    return F.interpolate(x, scale_factor=scale_factor, mode=mode, align_corners=align_corners)
+        # 在通道维拼接（B, 4*C, H/4, W/4）
+        fpn_outs = torch.cat(fpn_outs, dim=1)
+
+        # 3x3 bottleneck 压回 self.channels（B, C, H/4, W/4）
+        feats_out = self.fpn_bottleneck(fpn_outs)
+
+        return feats_out  # 与 UPerHead 一样返回单张融合特征图
+
+    def forward(self, inputs):
+        """Forward function."""
+        output = self._forward_feature(inputs)
+        # _forward_feature 输出单个特征图：shape=(2, 512, 128, 256), dtype=torch.float32, device=cuda:0
+        output = self.cls_seg(output)
+        return output
+        
 
 
 def make_divisible(value: int, divisor: int = 8, min_value: Optional[int] = None) -> int:
