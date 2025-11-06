@@ -468,3 +468,26 @@ def build_optimizer(args, model, logger, dis_modules_s4):
         raise NotImplementedError
 
     return optimizer
+
+
+def freeze_running_stats(model):
+    for m in model.modules():
+        if isinstance(m, torch.nn.BatchNorm2d):
+            m.track_running_stats = False  # 禁止更新running_mean/var
+            m.running_mean = m.running_mean.detach()
+            m.running_var = m.running_var.detach()
+
+
+def unfreeze_running_stats(model):
+    """
+    恢复 BatchNorm 层的 running_mean / running_var 更新。
+    对之前被 freeze_running_stats() 冻结的模型执行即可。
+    """
+    for m in model.modules():
+        if isinstance(m, torch.nn.BatchNorm2d):
+            m.track_running_stats = True  # 重新允许 BN 更新统计量
+            # 确保 buffer 重新挂接在计算图之外（仍保持 detachment 安全）
+            if m.running_mean is not None:
+                m.running_mean = m.running_mean.clone().detach()
+            if m.running_var is not None:
+                m.running_var = m.running_var.clone().detach()

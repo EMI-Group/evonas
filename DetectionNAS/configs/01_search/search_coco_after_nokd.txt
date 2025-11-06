@@ -1,8 +1,8 @@
 --config DetectionNAS/configs/mask_rcnn_DAMamba_search.py
 --model_name DetectionSearch
---ckpt_path ./runs/00_train/coco/FT_supernet_coco/07_depth/best_bbox_mAP.pth
+--ckpt_path ./runs/00_train/coco/FT_supernet_coco_nokd/07_depth/best_bbox_mAP.pth
 
---log_directory ./runs/coco/01_search/run_search/
+--log_directory ./runs/coco/01_search/run_search_nokd/
 --multiprocessing_distributed
 --dist_url tcp://127.0.0.1:2381
 --devices 0,1,2,3,4,5,6,7

@@ -1,0 +1,46 @@
+--model_name MambaDepth
+--encoder SuperNet
+--dataset nyu
+--data_path /data/dataset/NYU_Depth_V2/sync/
+--gt_path /data/dataset/NYU_Depth_V2/sync/
+--filenames_file data_splits/nyudepthv2_train_files_with_gt_dense.txt
+--batch_size 16
+--num_epochs 80
+--learning_rate 5e-5
+--min_lr 5e-6
+--warmup_lr 5e-7
+--warmup_epochs 3
+--weight_decay 0.05
+--max_norm -1
+--num_threads 4
+--input_height 480
+--input_width 640
+--max_depth 10
+--do_random_rotate
+--degree 2.5
+--log_directory ./runs/nyu/00_train/FT_supernet_archpool/
+--multiprocessing_distributed
+--dist_url tcp://127.0.0.1:2331
+--devices 2,3
+
+--log_freq 1000
+--do_online_eval
+--eval_freq 1000
+--data_path_eval /data/dataset/NYU_Depth_V2/test/
+--gt_path_eval /data/dataset/NYU_Depth_V2/test/
+--filenames_file_eval data_splits/nyudepthv2_test_files_with_gt.txt
+--min_depth_eval 1e-3
+--max_depth_eval 10
+--eigen_crop
+
+--d_state "[16, 32, 48, 64]"
+--mlp_ratio "[0.5, 1.0, 2.0, 3.0, 3.5, 4.0]"
+--ssd_expand "[0.5, 1, 2, 3, 4]"
+--open_depth
+
+--pretrain ./vssd_supernet_imagenet_1k.pth
+
+--dynamic_batch_size 1
+--kd_ratio 0.
+--arch_pool
+--amp

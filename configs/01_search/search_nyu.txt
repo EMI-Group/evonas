@@ -1,0 +1,39 @@
+--model_name MambaDepthSearch
+--encoder SuperNet
+--ckpt_path ./runs/FT_supernet_nyu/07_depth/abs_rel_best_weight.pth
+--dataset nyu
+--data_path /data/dataset/NYU_Depth_V2/sync/
+--gt_path /data/dataset/NYU_Depth_V2/sync/
+--filenames_file data_splits/nyudepthv2_train_files_with_gt_dense.txt
+--num_threads_val 1
+--persistent_workers
+--batch_size_val 4
+--input_height 480
+--input_width 640
+--max_depth 10
+--do_random_rotate
+--degree 2.5
+--log_directory ./runs/search_nyu/runXX_search_nyu/
+--multiprocessing_distributed
+--dist_url tcp://127.0.0.1:2381
+--devices 0,1,2,3,4,5,6,7
+
+--data_path_eval /data/dataset/NYU_Depth_V2/test/
+--gt_path_eval /data/dataset/NYU_Depth_V2/test/
+--filenames_file_eval data_splits/nyudepthv2_test_files_with_gt.txt
+--min_depth_eval 1e-3
+--max_depth_eval 10
+--eigen_crop
+
+--mlp_ratio "[0.5, 1.0, 2.0, 3.0, 3.5, 4.0]"
+--d_state "[16, 32, 48, 64]"
+--ssd_expand "[0.5, 1, 2, 3, 4]"
+--open_depth
+
+--population_size 96
+--n_iter 200
+--cross_p 0.95
+--mut_p 0.1
+
+--model_batch 3
+--concurrency 4

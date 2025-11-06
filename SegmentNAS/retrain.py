@@ -178,6 +178,8 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
         alpha=[args.alpha_1, args.alpha_2],
         student_dims=512, # student feature dimension
         teacher_dims=1024,  # teacher feature dimension
+        query_hw=(37,74),  # shape of tearcher feature 
+        pos_hw=(16, 32),  # shape of student feature 
         pos_dims=1024,  # same to teacher_dims
         self_query=True,
         softmax_scale=[5.,5.],

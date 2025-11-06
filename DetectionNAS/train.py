@@ -24,6 +24,7 @@ from DetectionNAS.networks import model
 from search_space import MambaSearchSpace
 from torch.amp import autocast, GradScaler
 
+from supernet_pool import ArchitecturePool
 from utils import build_iter_lambda_scheduler
 from mmdet.registry import MODELS, METRICS  
 from mmengine.evaluator import Evaluator
@@ -96,7 +97,8 @@ def parse_args():
     parser.add_argument('--do_online_eval',                        help='if set, perform online eval in every eval_freq steps', action='store_true')
     parser.add_argument('--eval_summary_directory',    type=str,   help='output directory for eval summary,'
                                                                         'if empty outputs to checkpoint folder', default='')
-    
+    # experimental
+    parser.add_argument('--arch_pool', action='store_true', help='if set, will train arch pool of subnet during training')
 
     if sys.argv.__len__() == 2:
         arg_filename_with_prefix = '@' + sys.argv[1]
@@ -294,7 +296,9 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
     num_total_steps = args.num_epochs * steps_per_epoch
     epoch = 0  # need equal to global_step // steps_per_epoch if resume
 
-    if args.num_epochs==12:
+    if args.num_epochs==36:
+        milestones = (24, 33)
+    elif args.num_epochs==12:
         milestones = (8, 11)
     elif args.num_epochs==8:
         milestones = (5, 7)
@@ -324,6 +328,9 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
         features['feat_S_s4'] = output[3]
     def hook_fn_T(module, input, output):
         features['feat_T_s4'] = output[3]
+
+    if args.arch_pool:
+        arch_pool = ArchitecturePool(pool_size=3)
 
     ################### train loop ########################
     model.train()
@@ -355,7 +362,7 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
                     # random sample subnet
                     sample_config = ss.sample(n_samples=1)[0]
                     model_module = unwrap_model(model)
-                    model_module.backbone.backbone.set_sample_config(sample_config=sample_config)  # TODO
+                    model_module.backbone.backbone.set_sample_config(sample_config=sample_config)
                     batched = model_module.data_preprocessor(sample_batched, True)
                     if args.f_distill:
                         # handle_S = model_module.backbone.layer4.register_forward_hook(hook_fn_S)  # for resnet50
@@ -375,6 +382,7 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
                     spat_loss = torch.tensor(0.0).cuda(args.gpu)
                     freq_loss = torch.tensor(0.0).cuda(args.gpu)
                     kd_loss = torch.tensor(0.0).cuda(args.gpu)
+
                     if args.f_distill:
                         feat_S_s4 = features.pop('feat_S_s4')
 
@@ -405,9 +413,24 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
                         handle_S.remove()
 
                     if args.kd_ratio > 0 or args.f_distill:
-                        # kd_loss = silog_criterion.forward(depth_est, depth_tea, interpolate=True)
-                        # print('loss', (1 - args.kd_ratio) * loss, 'kd_loss', args.kd_ratio * kd_loss, 'spat_loss', spat_loss, 'freq_loss', freq_loss)
                         loss = (1 - args.kd_ratio) * loss + args.kd_ratio * kd_loss + spat_loss + freq_loss
+
+                    if args.arch_pool:  # For comparison of methods from One-Shot Neural Architecture Search: Maximising Diversity to Overcome Catastrophic Forgetting
+                        mean_losses = torch.tensor(0.0).cuda(args.gpu)
+                        cur_code = ss.encode(sample_config)
+                        if len(arch_pool.pool) == arch_pool.pool_size:   
+                            total_loss = 0.0
+                            # pool branches
+                            with torch.no_grad():
+                                for arch_code in arch_pool.pool:
+                                    model_module.backbone.backbone.set_sample_config(sample_config=ss.decode(arch_code))
+                                    p_losses = model(**batched, mode='loss')
+                                    p_loss, _ = model_module.parse_losses(p_losses)
+                                    total_loss += p_loss
+                                    # print(f"  ├─ pool_arch[{arch_code}] 的 loss = {p_loss.item():.4f}")
+                            mean_losses = total_loss / len(arch_pool.pool)
+                        arch_pool.add_architecture(cur_code)
+                        loss = 0.8 * loss + 0.2 * mean_losses
                     
                     loss = loss / args.dynamic_batch_size
 

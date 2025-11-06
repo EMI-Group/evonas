@@ -20,10 +20,11 @@ from timm.scheduler.cosine_lr import CosineLRScheduler
 from tensorboardX import SummaryWriter
 
 from utils import post_process_depth, flip_lr, silog_loss, compute_errors, eval_metrics, \
-                       block_print, enable_print, normalize_result, inv_normalize, convert_arg_line_to_args, get_root_logger, unwrap_model, str2list, infer, compute_metrics
+                       block_print, enable_print, normalize_result, inv_normalize, convert_arg_line_to_args, get_root_logger, unwrap_model, str2list, infer, compute_metrics, freeze_running_stats, unfreeze_running_stats
 from networks.model import MambaDepth
 from search_space import MambaSearchSpace
 from torch.amp import autocast, GradScaler
+from supernet_pool import ArchitecturePool
 
 '''fine-tune supernet on object dataset, e.g. KITTI, NYU'''
 
@@ -121,6 +122,7 @@ def parse_args():
                                                                         'if empty outputs to checkpoint folder', default='')
     # experimental
     parser.add_argument('--dynamic_tanh',              action='store_true', help='if set, will use dynamic tanh for normalization')
+    parser.add_argument('--arch_pool', action='store_true', help='if set, will train arch pool of subnet during training')
     
 
     if sys.argv.__len__() == 2:
@@ -334,6 +336,10 @@ def main_worker(gpu, ngpus_per_node, args):
 
     ss = MambaSearchSpace(args.mlp_ratio, args.d_state, args.ssd_expand, open_depth=args.open_depth)
 
+    if args.arch_pool:
+        arch_pool = ArchitecturePool(pool_size=3)
+        freeze_running_stats(model)
+    
     # training
     while epoch < args.num_epochs:
         if args.distributed:
@@ -383,12 +389,30 @@ def main_worker(gpu, ngpus_per_node, args):
                         # print('loss', (1 - args.kd_ratio) * loss, 'kd_loss', args.kd_ratio * kd_loss, 'spat_loss', spat_loss, 'freq_loss', freq_loss)
                         loss = (1 - args.kd_ratio) * loss + args.kd_ratio * kd_loss + spat_loss + freq_loss
                     
+                    if args.arch_pool:  # For comparison of methods from One-Shot Neural Architecture Search: Maximising Diversity to Overcome Catastrophic Forgetting
+                        mean_losses = loss.new_zeros(())
+                        cur_code = ss.encode(sample_config)
+                        if len(arch_pool.pool) == arch_pool.pool_size:   
+                            total_loss = 0.0
+                            # pool branches
+                            with torch.no_grad():
+                                for arch_code in arch_pool.pool:
+                                    model_module.backbone.set_sample_config(sample_config=ss.decode(arch_code))
+                                    pool_depth = model(image, mid_features=False)
+                                    p_loss = silog_criterion.forward(pool_depth, depth_gt)
+                                    total_loss += p_loss
+                                    # print(f"  ├─ pool_arch[{arch_code}] 的 loss = {p_loss.item():.4f}")
+                            mean_losses = total_loss / len(arch_pool.pool)
+                        arch_pool.add_architecture(cur_code)
+                        loss = 0.8 * loss + 0.2 * mean_losses
+                        
+
                     loss = loss / args.dynamic_batch_size
 
                 if args.amp:
                     scaler.scale(loss).backward()
                 else:    
-                    loss.backward()
+                    loss.backward()  #TODO  RuntimeError: one of the variables needed for gradient computation has been modified by an inplace operation: [torch.cuda.FloatTensor [512]] is at version 6; expected version 5 instead. Hint: enable anomaly detection to find the operation that failed to compute its gradient, with torch.autograd.set_detect_anomaly(True).
 
 
             scheduler.step_update(epoch * steps_per_epoch + step)

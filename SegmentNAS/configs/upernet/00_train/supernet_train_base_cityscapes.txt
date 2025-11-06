@@ -6,13 +6,17 @@ SegmentNAS/configs/depthanything/depth_anything_large_mask2former_16xb1_80k_city
 --learning_rate 6e-5
 --weight_decay 0.01
 --max_norm -1
---log_directory ./runs/cityscapes/00_train/run_debug_nas/
+--log_directory ./runs/cityscapes/00_train/supernet_train_base_config/
 --multiprocessing_distributed
 --dist_url tcp://127.0.0.1:2361
 --devices 4,5,6,7
 
 --log_freq 1000
 --do_online_eval
+
+--mlp_ratio "[4.0]"
+--d_state "[64]"
+--ssd_expand "[4]"
 
 --dynamic_batch_size 1
 --kd_ratio 0.0

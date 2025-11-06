@@ -10,9 +10,6 @@ from mmcv.cnn.bricks.transformer import FFN
 
 '''
 code from ScaleKD
-https://github.com/deep-optimization/ScaleKD
-
-change pos_embed function by Yu Zhihao
 '''
 class FreqMaskingDistillLossv2(nn.Module):
 
@@ -20,6 +17,8 @@ class FreqMaskingDistillLossv2(nn.Module):
                  alpha,
                  student_dims,
                  teacher_dims,
+                 query_hw,
+                 pos_hw,
                  pos_dims,
                  window_shapes=(1,1),
                  self_query=True,
@@ -32,8 +31,8 @@ class FreqMaskingDistillLossv2(nn.Module):
         self.dis_freq = dis_freq
         self.self_query = self_query
 
-        self.projector_0 = AttentionProjector(student_dims, teacher_dims, pos_dims, window_shapes=window_shapes, self_query=self_query, softmax_scale=softmax_scale[0], num_heads=num_heads)
-        self.projector_1 = AttentionProjector(student_dims, teacher_dims, pos_dims, window_shapes=window_shapes, self_query=self_query, softmax_scale=softmax_scale[1], num_heads=num_heads)
+        self.projector_0 = AttentionProjector(student_dims, teacher_dims, query_hw, pos_hw, pos_dims, window_shapes=window_shapes, self_query=self_query, softmax_scale=softmax_scale[0], num_heads=num_heads)
+        self.projector_1 = AttentionProjector(student_dims, teacher_dims, query_hw, pos_hw, pos_dims, window_shapes=window_shapes, self_query=self_query, softmax_scale=softmax_scale[1], num_heads=num_heads)
 
         
 
@@ -112,8 +111,8 @@ class FreqMaskingDistillLossv2(nn.Module):
         dis_loss = dis_loss * self.alpha[1]
 
         return dis_loss
-
-
+    
+    
     def init_weights(self):
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
@@ -133,6 +132,8 @@ class AttentionProjector(nn.Module):
     def __init__(self,
                  student_dims,
                  teacher_dims,
+                 hw_dims,
+                 pos_hw,
                  pos_dims,
                  window_shapes=(1,1),
                  self_query=True,
@@ -141,7 +142,7 @@ class AttentionProjector(nn.Module):
                  ):
         super(AttentionProjector, self).__init__()
 
-        # self.hw_dims = hw_dims
+        self.hw_dims = hw_dims
         self.student_dims = student_dims
         self.teacher_dims = teacher_dims
 
@@ -153,40 +154,34 @@ class AttentionProjector(nn.Module):
                                       nn.BatchNorm2d(student_dims),
                                       nn.ReLU())
 
-        # self.pos_embed = nn.Parameter(torch.zeros(1, student_dims, pos_hw[0], pos_hw[1]), requires_grad=True)
-        self.pos_embed = nn.Conv2d(student_dims, student_dims, 3, 1, 3 // 2, groups=student_dims)
+        self.pos_embed = nn.Parameter(torch.zeros(1, student_dims, pos_hw[0], pos_hw[1]), requires_grad=True)
         self.pos_attention = WindowMultiheadPosAttention(teacher_dims, num_heads=num_heads, input_dims=student_dims, pos_dims=pos_dims, window_shapes=window_shapes, softmax_scale=softmax_scale)
         self.ffn = FFN(embed_dims=teacher_dims, feedforward_channels=teacher_dims * 4)
 
         self.norm = nn.LayerNorm([teacher_dims])
 
         if self_query:
-            # self.query = nn.Embedding(hw_dims[0] * hw_dims[1], teacher_dims)
-            self.query = nn.Sequential(
-                nn.Conv2d(student_dims, student_dims, 3, 1, 3 // 2, groups=student_dims),
-                nn.Conv2d(student_dims, teacher_dims, 1)
-            )
+            self.query = nn.Embedding(hw_dims[0] * hw_dims[1], teacher_dims)
         else:
             self.query = None
 
-        # if self.pos_embed is not None:
-        #     trunc_normal_(self.pos_embed, std=0.02)
+        if self.pos_embed is not None:
+            trunc_normal_(self.pos_embed, std=0.02)
 
 
     def forward(self, x, query=None):
-        # H, W = self.hw_dims
-        # N = x.shape[0]
-        N, _, H, W = x.shape
+        H, W = self.hw_dims
+        N = x.shape[0]
 
         if query is not None:
             pos_emb = query.permute(0,2,1).reshape(N, -1, H, W).contiguous()
         elif self.query is not None:
-            pos_emb = self.query(x)
+            pos_emb = self.query.weight.view(1,H,W,self.teacher_dims).permute(0,3,1,2).repeat(N,1,1,1)
         else:
             raise NotImplementedError("There is no query!")
 
-        preds_S = self.proj_student(x) + self.pos_embed(x)
-        # pos_emb = self.proj_pos(pos_emb)  # directly use conv to get pos emb
+        preds_S = self.proj_student(x) + self.pos_embed.to(x.device)
+        pos_emb = self.proj_pos(pos_emb)
         pos_emb = torch.flatten(pos_emb.permute(0, 2, 3, 1), 1, 2)
 
         fea_S = self.pos_attention(torch.flatten(preds_S.permute(0, 2, 3, 1), 1, 2), pos_emb)
@@ -296,16 +291,3 @@ class DCT():
         X1 = self.inverse_transform_h(x)
         X2 = self.inverse_transform_w(X1.transpose(-1, -2))
         return X2.transpose(-1, -2)
-    
-
-class ResDWC(nn.Module):
-    def __init__(self, dim, kernel_size=3):
-        super().__init__()
-        self.dim = dim
-        self.kernel_size = kernel_size
-        self.conv = nn.Conv2d(dim, dim, kernel_size, 1, kernel_size // 2, groups=dim)
-
-
-    def forward(self, x):
-        return F.conv2d(x, self.conv.weight, self.conv.bias, stride=1,
-                        padding=self.kernel_size // 2, groups=self.dim)

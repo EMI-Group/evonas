@@ -89,6 +89,8 @@ pip install ftfy==6.3.1
 
 2025/10/29 update Added semantic segmentation support (supernet training, NAS search, retraining all compatible)
 
+2025/11/1 update SuperNet Fine-tuning (supernet training by architecture pool)
+
 ------
 
 ##  Search Space

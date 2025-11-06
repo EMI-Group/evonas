@@ -1,8 +1,8 @@
 --config SegmentNAS/configs/upernet/upernet_nas_4xb2_40k_cityscapes_512x1024.py
 --model_name SegmentSearch
---ckpt_path ./runs/cityscapes/FT_supernet_cityscapes/07_depth/best_mIoU.pth
+--ckpt_path ./runs/cityscapes/00_train/FT_supernet_cityscapes/07_depth/best_mIoU.pth
 
---log_directory ./runs/cityscapes/search/run_1/
+--log_directory ./runs/cityscapes/01_search/run_search/
 --multiprocessing_distributed
 --dist_url tcp://127.0.0.1:2381
 --devices 0,1,2,3,4,5,6,7
