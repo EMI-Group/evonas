@@ -154,17 +154,18 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
     if args.kd_ratio > 0 or args.f_distill:
         t_cfg = Config.fromfile(args.teacher_config)
         teacher_model = MODELS.build(t_cfg.model)
-        load_checkpoint(teacher_model, './checkpoints/cityscapes_vitl_mIoU_86.4.pth', map_location='cpu')
+        # load_checkpoint(teacher_model, './checkpoints/cityscapes_vitl_mIoU_86.4.pth', map_location='cpu')
+        load_checkpoint(teacher_model, './checkpoints/upernet_r101_512x1024_80k_cityscapes_20200607_002403-f05f2345.pth', map_location='cpu')
         logger.info("Successed loading weights for teacher model")
     
     from distillation.fmdv2 import FreqMaskingDistillLossv2
     dis_modules_s4 = FreqMaskingDistillLossv2(
         alpha=[args.alpha_1, args.alpha_2],
         student_dims=512, # student feature dimension
-        teacher_dims=1024,  # teacher feature dimension
-        query_hw=(37,74),  # shape of tearcher feature 
+        teacher_dims=512,  # teacher feature dimension   e.g. 1024 for DA
+        query_hw=(16,32),  # shape of tearcher feature   e.g.(37,74) for DA
         pos_hw=(16, 32),  # shape of student feature 
-        pos_dims=1024,  # same to teacher_dims
+        pos_dims=512,  # same to teacher_dims   e.g. 1024 for DA
         self_query=True,
         softmax_scale=[5.,5.],
         num_heads=16
@@ -342,8 +343,10 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
                     with autocast(device_type='cuda', dtype=torch.float16, enabled=args.amp):
                         t_module = unwrap_model(teacher_model)
                         handle_T = t_module.backbone.register_forward_hook(hook_fn_T)
-                        fix_inputs, ph, pw = pad_to_multiple(batched['inputs'], n=14, pad_value=0.0)
-                        _ = t_module.extract_feat(fix_inputs)
+                        # fix_inputs, ph, pw = pad_to_multiple(batched['inputs'], n=14, pad_value=0.0)  # for DA
+                        # _ = t_module.extract_feat(fix_inputs)
+                        _ = t_module.extract_feat(batched['inputs'])
+
                     if args.f_distill:
                         feat_T_s4 = features.pop('feat_T_s4')
                         # feat_T_s4 = feat_T_s4[:,:,feat_T_s4.shape[-2]-1, feat_T_s4.shape[-1]-1]

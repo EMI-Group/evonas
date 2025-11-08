@@ -1,6 +1,6 @@
 --config DetectionNAS/configs/mask_rcnn_DAMamba_search.py
 --model_name DetectionSearch
---ckpt_path ./runs/00_train/coco/FT_supernet_coco/07_depth/best_bbox_mAP.pth
+--ckpt_path ./runs/coco/00_train/FT_supernet_coco/07_depth/best_bbox_mAP.pth
 
 --log_directory ./runs/coco/01_search/run_search/
 --multiprocessing_distributed

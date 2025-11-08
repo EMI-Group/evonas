@@ -1,5 +1,5 @@
 SegmentNAS/configs/upernet/upernet_nas_4xb2_40k_cityscapes_512x1024.py
-SegmentNAS/configs/depthanything/depth_anything_large_mask2former_16xb1_80k_cityscapes_896x896.py
+SegmentNAS/configs/upernet/upernet_r101_4xb2_80k_cityscapes_512x1024.py
 --model_name mambasegment
 --optimizer adamw
 --num_epochs 108

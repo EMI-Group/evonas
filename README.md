@@ -85,11 +85,13 @@ pip install ftfy==6.3.1
 
 2025/9/30 update Retrain(Support neck module choices e.g. PPM, SP and None)
 
-2025/10/24 update Added object detection support (supernet training, NAS search, retraining all compatible)
+2025/10/24 update Object Detection support (supernet training, NAS search, retraining all compatible)
 
-2025/10/29 update Added semantic segmentation support (supernet training, NAS search, retraining all compatible)
+2025/10/29 update Semantic Segmentation support (supernet training, NAS search, retraining all compatible)
 
 2025/11/1 update SuperNet Fine-tuning (support training supernet by architecture pool)
+
+2025/11/7 update Semantic Segmentation tearcher network (r101-upernet replaced DepthAnything)
 
 ------
 
