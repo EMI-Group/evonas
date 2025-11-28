@@ -1,7 +1,7 @@
 #!/bin/bash
 
-python DetectionNAS/train.py DetectionNAS/configs/coco_nas.txt 
+python MambaDepthNAS/search.py configs/01_search/search_nyu_archpool.txt
 
-python DetectionNAS/train.py DetectionNAS/configs/coco_nas_kd.txt 
+python MambaDepthNAS/search.py configs/01_search/search_nyu_random.txt 
 
 echo "this is fine"

@@ -162,10 +162,10 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
     dis_modules_s4 = FreqMaskingDistillLossv2(
         alpha=[args.alpha_1, args.alpha_2],
         student_dims=512, # student feature dimension
-        teacher_dims=512,  # teacher feature dimension   e.g. 1024 for DA
+        teacher_dims=2048,  # teacher feature dimension   e.g. 1024 for DA
         query_hw=(16,32),  # shape of tearcher feature   e.g.(37,74) for DA
         pos_hw=(16, 32),  # shape of student feature 
-        pos_dims=512,  # same to teacher_dims   e.g. 1024 for DA
+        pos_dims=2048,  # same to teacher_dims   e.g. 1024 for DA
         self_query=True,
         softmax_scale=[5.,5.],
         num_heads=16

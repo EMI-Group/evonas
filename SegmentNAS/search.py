@@ -120,7 +120,7 @@ def _spawn_one_gpu(idx_chunk, cfg_chunk, gpu_id):
         res = subprocess.run(
             ["python", "SegmentNAS/sub_test_latency.py",
              "--config_file", path,
-             "--base_config", "SegmentNAS/configs/upernet_nas_subnet_cityscapes.py"],
+             "--base_config", "SegmentNAS/configs/upernet/upernet_nas_subnet_cityscapes.py"],
             capture_output=True, text=True, check=True, timeout=500,
             env={**os.environ,
                  "OMP_NUM_THREADS": "1",

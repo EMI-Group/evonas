@@ -1,0 +1,51 @@
+--teacher_config ./configs/depth_any_nyu.py
+--model_name rank_nyu
+--encoder SuperNet
+--dataset nyu
+--data_path /home/zhanghaoyu/dataset/NYU_Depth_V2/sync/
+--gt_path /home/zhanghaoyu/dataset/NYU_Depth_V2/sync/
+--filenames_file data_splits/nyudepthv2_train_files_with_gt_dense.txt
+--batch_size 16
+--num_epochs 40
+--learning_rate 8e-5
+--min_lr 8e-6
+--warmup_lr 1e-6
+--warmup_epochs 3
+--weight_decay 0.001
+--max_norm -1
+--num_threads 1
+--input_height 480
+--input_width 640
+--max_depth 10
+--do_random_rotate
+--degree 2.5
+--log_directory ./runs/exp10_rank/rank_nyu/12_retrain_nyu_top_1/
+--multiprocessing_distributed
+--dist_url tcp://127.0.0.1:2360
+--devices 0
+
+--log_freq 1000
+--do_online_eval
+--eval_freq 1000
+--data_path_eval /home/zhanghaoyu/dataset/NYU_Depth_V2/test/
+--gt_path_eval /home/zhanghaoyu/dataset/NYU_Depth_V2/test/
+--filenames_file_eval data_splits/nyudepthv2_test_files_with_gt.txt
+--min_depth_eval 1e-3
+--max_depth_eval 10
+--eigen_crop
+
+--pretrain ./vssd_supernet_imagenet_1k.pth
+
+--mlp_ratio "[2.0, 3.5, 2.0, 2.0]"
+--d_state "[48, 32, 64]"
+--ssd_expand "[2, 3, 4]"
+--depth "[[0, 1], [1, 0, 1, 0], [1, 1, 0, 1, 1, 0, 1, 0], [1, 0, 1, 0]]"
+
+
+--dynamic_batch_size 1
+--kd_ratio 0.1
+--f_distill
+--alpha_1 0.08
+--alpha_2 0.06
+--fmd_learning_rate 5e-5
+--amp

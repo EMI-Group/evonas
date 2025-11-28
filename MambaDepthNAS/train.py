@@ -20,12 +20,12 @@ from timm.scheduler.cosine_lr import CosineLRScheduler
 from tensorboardX import SummaryWriter
 
 from utils import post_process_depth, flip_lr, silog_loss, compute_errors, eval_metrics, \
-                       block_print, enable_print, normalize_result, inv_normalize, convert_arg_line_to_args, get_root_logger, unwrap_model, str2list, infer, compute_metrics, freeze_running_stats, unfreeze_running_stats
+                       block_print, enable_print, normalize_result, inv_normalize, convert_arg_line_to_args, get_root_logger, unwrap_model, str2list, infer, compute_metrics
 from networks.model import MambaDepth
 from search_space import MambaSearchSpace
 from torch.amp import autocast, GradScaler
 from supernet_pool import ArchitecturePool
-
+import copy
 '''fine-tune supernet on object dataset, e.g. KITTI, NYU'''
 
 ### develop
@@ -338,8 +338,16 @@ def main_worker(gpu, ngpus_per_node, args):
 
     if args.arch_pool:
         arch_pool = ArchitecturePool(pool_size=3)
-        freeze_running_stats(model)
-    
+        # freeze_running_stats(model)  # 在多架构共享权重的训练中，把 BN running stats 冻结了，导致归一化长期失配，引起 loss 曲线大幅抖动和性能崩掉。
+        pool_model = copy.deepcopy(model.module) # 解决方案：为避免多架构前向导致BN统计被污染，使用独立pool_model结构并共享参数权值，实现权值同步但状态隔离。
+        # 共享权重（参数）
+        for p_pool, p_base in zip(pool_model.parameters(), model.module.parameters()):
+            p_pool.data = p_base.data 
+        pool_model.eval()
+        for p in pool_model.parameters():
+            p.requires_grad_(False)
+
+            
     # training
     while epoch < args.num_epochs:
         if args.distributed:
@@ -365,6 +373,23 @@ def main_worker(gpu, ngpus_per_node, args):
                     # random sample subnet
                     sample_config = ss.sample(n_samples=1)[0]
                     model_module = unwrap_model(model)
+                    if args.arch_pool: 
+                        pool_model.eval()
+                        mean_losses = torch.tensor(0.0).cuda(args.gpu)
+                        cur_code = ss.encode(sample_config)
+                        if len(arch_pool.pool) == arch_pool.pool_size:   
+                            total_loss = 0.0
+                            # pool branches
+                            with torch.no_grad():
+                                for arch_code in arch_pool.pool:
+                                    pool_model.backbone.set_sample_config(sample_config=ss.decode(arch_code))
+                                    pool_depth = pool_model(image, mid_features=False)
+                                    p_loss = silog_criterion.forward(pool_depth, depth_gt)
+                                    total_loss += p_loss
+                                    # print(f"  ├─ pool_arch[{arch_code}] 的 loss = {p_loss.item():.4f}")
+                            mean_losses = total_loss / len(arch_pool.pool)
+                        arch_pool.add_architecture(cur_code)
+                    
                     model_module.backbone.set_sample_config(sample_config=sample_config)
                     # print(sample_config)  # {'mlp_ratio': [2.0, 4.0, 4.0, 4.0], 'd_state': [32, 32, 64], 'expand': [2, 4, 2], 'depth': [[0, 0, 1, 0, 1, 0, 1, 1], [1, 1, 1, 0, 0, 1, 1, 1], [0, 1, 0, 1, 0, 1, 0, 0], [1, 1, 1, 1, 0, 0, 0, 0]]}
 
@@ -390,20 +415,6 @@ def main_worker(gpu, ngpus_per_node, args):
                         loss = (1 - args.kd_ratio) * loss + args.kd_ratio * kd_loss + spat_loss + freq_loss
                     
                     if args.arch_pool:  # For comparison of methods from One-Shot Neural Architecture Search: Maximising Diversity to Overcome Catastrophic Forgetting
-                        mean_losses = loss.new_zeros(())
-                        cur_code = ss.encode(sample_config)
-                        if len(arch_pool.pool) == arch_pool.pool_size:   
-                            total_loss = 0.0
-                            # pool branches
-                            with torch.no_grad():
-                                for arch_code in arch_pool.pool:
-                                    model_module.backbone.set_sample_config(sample_config=ss.decode(arch_code))
-                                    pool_depth = model(image, mid_features=False)
-                                    p_loss = silog_criterion.forward(pool_depth, depth_gt)
-                                    total_loss += p_loss
-                                    # print(f"  ├─ pool_arch[{arch_code}] 的 loss = {p_loss.item():.4f}")
-                            mean_losses = total_loss / len(arch_pool.pool)
-                        arch_pool.add_architecture(cur_code)
                         loss = 0.8 * loss + 0.2 * mean_losses
                         
 
@@ -412,7 +423,7 @@ def main_worker(gpu, ngpus_per_node, args):
                 if args.amp:
                     scaler.scale(loss).backward()
                 else:    
-                    loss.backward()  #TODO  RuntimeError: one of the variables needed for gradient computation has been modified by an inplace operation: [torch.cuda.FloatTensor [512]] is at version 6; expected version 5 instead. Hint: enable anomaly detection to find the operation that failed to compute its gradient, with torch.autograd.set_detect_anomaly(True).
+                    loss.backward()
 
 
             scheduler.step_update(epoch * steps_per_epoch + step)

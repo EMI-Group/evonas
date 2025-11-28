@@ -6,7 +6,7 @@ import matplotlib.animation as animation
 GIF = False
 HV = False
 
-target_dir = '/data/code_yzh/DistillNAS/runs/nyu/01_search/search_nyu_random'
+target_dir = '/data/code_yzh/DistillNAS/runs/cityscapes/01_search/run_search'
 # Ensure output directory exists
 output_dir = os.path.join(target_dir, 'show_evo_pics/')
 os.makedirs(output_dir, exist_ok=True)
@@ -25,33 +25,34 @@ if gen_steps[-1] != max_gen:
 cmap = plt.cm.viridis_r
 colors = [cmap(i / (len(gen_steps) - 1)) for i in range(len(gen_steps))]
 
-# Plot 1: Latency vs AbsRel
+# Plot 1: Latency vs mIoU
 plt.figure(figsize=(8, 6))
 for i, gen in enumerate(gen_steps):
     data = df[df['gen'] == gen]
-    plt.scatter(data['latency'], data['abs_rel'], label=f'Gen {gen}', color=colors[i])
+    plt.scatter(data['latency'], data['mIoU'], label=f'Gen {gen}', color=colors[i])
 plt.xlabel('Latency')
-plt.ylabel('Abs Relative Error')
-plt.title('Latency vs AbsRel (Multiple Generations)')
+plt.ylabel('mIoU')
+plt.title('Latency vs mIoU (Multiple Generations)')
 plt.legend()
 plt.grid(True)
 plt.tight_layout()
-plt.savefig(os.path.join(output_dir, 'latency_vs_absrel_multi_gen.png'))
+plt.savefig(os.path.join(output_dir, 'latency_vs_miou_multi_gen.png'))
 plt.close()
 
-# Plot 2: MACs vs AbsRel
+# Plot 2: MACs vs mIoU
 plt.figure(figsize=(8, 6))
 for i, gen in enumerate(gen_steps):
     data = df[df['gen'] == gen]
-    plt.scatter(data['macs'], data['abs_rel'], label=f'Gen {gen}', color=colors[i])
+    plt.scatter(data['macs'], data['mIoU'], label=f'Gen {gen}', color=colors[i])
 plt.xlabel('MACs')
-plt.ylabel('Abs Relative Error')
-plt.title('MACs vs AbsRel (Multiple Generations)')
+plt.ylabel('mIoU')
+plt.title('MACs vs mIoU (Multiple Generations)')
 plt.legend()
 plt.grid(True)
 plt.tight_layout()
-plt.savefig(os.path.join(output_dir, 'macs_vs_absrel_multi_gen.png'))
+plt.savefig(os.path.join(output_dir, 'macs_vs_miou_multi_gen.png'))
 plt.close()
+
 
 # Plot 3: MACs vs Latency
 plt.figure(figsize=(8, 6))
@@ -67,20 +68,21 @@ plt.tight_layout()
 plt.savefig(os.path.join(output_dir, 'macs_vs_latency_multi_gen.png'))
 plt.close()
 
-# Plot 4: 3D Plot - AbsRel vs Latency vs MACs
+# Plot 4: 3D Plot - mIoU vs Latency vs MACs
 fig = plt.figure(figsize=(10, 8))
 ax = fig.add_subplot(111, projection='3d')
 for i, gen in enumerate(gen_steps):
     data = df[df['gen'] == gen]
-    ax.scatter(data['latency'], data['macs'], data['abs_rel'], label=f'Gen {gen}', color=colors[i])
+    ax.scatter(data['latency'], data['macs'], data['mIoU'], label=f'Gen {gen}', color=colors[i])
 ax.set_xlabel('Latency')
 ax.set_ylabel('MACs')
-ax.set_zlabel('Abs Relative Error')
-ax.set_title('3D Plot: AbsRel vs Latency vs MACs (Multiple Generations)')
+ax.set_zlabel('mIoU')
+ax.set_title('3D Plot: mIoU vs Latency vs MACs (Multiple Generations)')
 ax.legend()
 plt.tight_layout()
-plt.savefig(os.path.join(output_dir, '3d_absrel_latency_macs_multi_gen.png'))
+plt.savefig(os.path.join(output_dir, '3d_miou_latency_macs_multi_gen.png'))
 plt.close()
+
 
 
 if GIF:
@@ -92,20 +94,20 @@ if GIF:
     # Compute global axis limits
     x_min, x_max = df['latency'].min(), df['latency'].max()
     y_min, y_max = df['macs'].min(), df['macs'].max()
-    z_min, z_max = df['abs_rel'].min(), df['abs_rel'].max()
+    z_min, z_max = df['mIoU'].min(), df['mIoU'].max()
 
     def update(frame):
         ax.clear()
         current_gen = frame + 1
         data = df[df['gen'] == current_gen]
-        ax.scatter(data['latency'], data['macs'], data['abs_rel'], color='blue')
+        ax.scatter(data['latency'], data['macs'], data['mIoU'], color='blue')
         ax.set_xlabel('Latency')
         ax.set_ylabel('MACs')
-        ax.set_zlabel('Abs Relative Error')
+        ax.set_zlabel('mIoU')
         ax.set_xlim(x_min, x_max)
         ax.set_ylim(y_min, y_max)
         ax.set_zlim(z_min, z_max)
-        ax.set_title(f'3D Evolution: Gen {current_gen}')
+        ax.set_title(f'3D Evolution (mIoU): Gen {current_gen}')
 
 
     ani = animation.FuncAnimation(fig, update, frames=max_gen, interval=200)
@@ -118,23 +120,23 @@ if GIF:
 
     # Global axis limits
     x_min, x_max = df['latency'].min(), df['latency'].max()
-    y_min, y_max = df['abs_rel'].min(), df['abs_rel'].max()
+    y_min, y_max = df['mIoU'].min(), df['mIoU'].max()
 
     def update_2d(frame):
         ax2d.clear()
         current_gen = frame + 1
         data = df[df['gen'] == current_gen]
-        ax2d.scatter(data['latency'], data['abs_rel'], color='blue')
+        ax2d.scatter(data['latency'], data['mIoU'], color='blue')
         ax2d.set_xlim(x_min, x_max)
         ax2d.set_ylim(y_min, y_max)
         ax2d.set_xlabel('Latency')
-        ax2d.set_ylabel('Abs Relative Error')
-        ax2d.set_title(f'Latency vs AbsRel - Generation {current_gen}')
+        ax2d.set_ylabel('mIoU')
+        ax2d.set_title(f'Latency vs mIoU - Generation {current_gen}')
         ax2d.grid(True)
 
     max_gen = df['gen'].max()
     ani_2d = animation.FuncAnimation(fig2d, update_2d, frames=max_gen, interval=200)
-    ani_2d.save(os.path.join(output_dir, 'latency_vs_absrel_evolution.gif'), writer='pillow')
+    ani_2d.save(os.path.join(output_dir, 'latency_vs_miou_evolution.gif'), writer='pillow')
     plt.close()
 
 ### singe object
@@ -142,9 +144,9 @@ if GIF:
 grouped = df.groupby('gen')
 gens = sorted(grouped.groups.keys())
 
-# Compute min & mean for each objective
-absrel_min = [grouped.get_group(g)['abs_rel'].min() for g in gens]
-absrel_mean = [grouped.get_group(g)['abs_rel'].mean() for g in gens]
+# mIoU：max & mean
+miou_max = [grouped.get_group(g)['mIoU'].max() for g in gens]
+miou_mean = [grouped.get_group(g)['mIoU'].mean() for g in gens]
 
 latency_min = [grouped.get_group(g)['latency'].min() for g in gens]
 latency_mean = [grouped.get_group(g)['latency'].mean() for g in gens]
@@ -152,17 +154,17 @@ latency_mean = [grouped.get_group(g)['latency'].mean() for g in gens]
 macs_min = [grouped.get_group(g)['macs'].min() for g in gens]
 macs_mean = [grouped.get_group(g)['macs'].mean() for g in gens]
 
-# Plot AbsRel: min + mean
+# Plot mIoU: max + mean
 plt.figure(figsize=(8, 5))
-plt.plot(gens, absrel_min, marker='o', label='Min AbsRel')
-plt.plot(gens, absrel_mean, marker='x', linestyle='--', label='Mean AbsRel')
+plt.plot(gens, miou_max, marker='o', label='Max mIoU')
+plt.plot(gens, miou_mean, marker='x', linestyle='--', label='Mean mIoU')
 plt.xlabel('Generation')
-plt.ylabel('Abs Relative Error')
-plt.title('Convergence - AbsRel')
+plt.ylabel('mIoU')
+plt.title('Convergence - mIoU')
 plt.legend()
 plt.grid(True)
 plt.tight_layout()
-plt.savefig(os.path.join(output_dir, 'convergence_absrel_min_mean.png'))
+plt.savefig(os.path.join(output_dir, 'convergence_miou_max_mean.png'))
 plt.close()
 
 # Plot Latency: min + mean
@@ -197,20 +199,25 @@ if HV:
     from pymoo.util.nds.non_dominated_sorting import NonDominatedSorting
     import numpy as np
 
+    # 把“越大越好”的 mIoU 变成“越小越好”的优化目标
+    # 假设 df['miou'] 在 [0, 1] 或 [0, 100] 都没关系，乘个 -1 即可
+    df['mIoU'] = -df['mIoU']
+
     def calc_hv(ref_pt, F, normalized=True):
         # 非支配前沿
         front = NonDominatedSorting().do(F, only_non_dominated_front=True)
         nd_F = F[front, :]
+        # 参考点略比最差情况更差一点
         ref_point = 1.01 * np.array(ref_pt)
         hv = HV(ref_point=ref_point)(nd_F)
         if normalized:
             hv = hv / np.prod(ref_point)
         return hv
 
-    # 只需选择两个或三个目标，HV通常支持2/3维
-    objectives = ['abs_rel', 'latency', 'macs']  # 或 ['abs_rel', 'latency', 'macs']，看你目标维数
+    # 三个目标：注意这里用的是 miou_obj（负号）
+    objectives = ['mIoU', 'latency', 'macs']
 
-    # 选定参考点（以所有数据最大值*1.01）
+    # 参考点使用所有数据的最大值（miou_obj 越大越差，对应 mIoU 越小）
     ref_pt = [df[obj].max() for obj in objectives]
 
     grouped = df.groupby('gen')
@@ -222,25 +229,26 @@ if HV:
         curr_F = grouped.get_group(g)[objectives].values
         front_i_idx = NonDominatedSorting().do(curr_F, only_non_dominated_front=True)
         front_i = curr_F[front_i_idx, :]
+
         if prev_front is None:
             merged_F = front_i
         else:
             merged_F = np.vstack([front_i, prev_front])
-        # F = grouped.get_group(g)[objectives].values
+
         hv = calc_hv(ref_pt, merged_F, normalized=True)
         hv_list.append(hv)
-        # 必须：每轮更新历史前沿
+
+        # 更新历史前沿
         front = NonDominatedSorting().do(merged_F, only_non_dominated_front=True)
         prev_front = merged_F[front, :]
-        # prev_front = front_i
 
     # 绘制 HV 收敛曲线
     plt.figure(figsize=(8, 5))
     plt.plot(gens, hv_list, marker='o', label='Hypervolume')
     plt.xlabel('Generation')
     plt.ylabel('Normalized Hypervolume')
-    plt.title('HV Convergence Curve')
+    plt.title('HV Convergence Curve (mIoU, Latency, MACs)')
     plt.grid(True)
     plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, 'convergence_hv_curve.png'))
+    plt.savefig(os.path.join(output_dir, 'convergence_hv_curve_miou_latency_macs.png'))
     plt.close()

@@ -21,7 +21,7 @@
 --log_directory ./runs/nyu/00_train/FT_supernet_archpool/
 --multiprocessing_distributed
 --dist_url tcp://127.0.0.1:2331
---devices 2,3
+--devices 4,5
 
 --log_freq 1000
 --do_online_eval

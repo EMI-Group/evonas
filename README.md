@@ -93,6 +93,8 @@ pip install ftfy==6.3.1
 
 2025/11/7 update Semantic Segmentation tearcher network (r101-upernet replaced DepthAnything)
 
+2025/11/9 update SuperNet Training (fixed bug of architecture pool)
+
 ------
 
 ##  Search Space
