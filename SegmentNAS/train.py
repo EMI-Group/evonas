@@ -148,24 +148,25 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
     model.init_weights()
     model.train()
     
-    # load_checkpoint(model, '/data/code_yzh/DistillNAS/checkpoints/cityscapes_vitl_mIoU_86.4.pth', map_location='cpu')
+    # load_checkpoint(model, './checkpoints/mask2former_swin-l-in22k-384x384-pre_8xb2-90k_cityscapes-512x1024_20221202_141901-28ad20f1.pth', map_location='cpu')
 
     ### teacher model
     if args.kd_ratio > 0 or args.f_distill:
         t_cfg = Config.fromfile(args.teacher_config)
         teacher_model = MODELS.build(t_cfg.model)
         # load_checkpoint(teacher_model, './checkpoints/cityscapes_vitl_mIoU_86.4.pth', map_location='cpu')
-        load_checkpoint(teacher_model, './checkpoints/upernet_r101_512x1024_80k_cityscapes_20200607_002403-f05f2345.pth', map_location='cpu')
+        # load_checkpoint(teacher_model, './checkpoints/upernet_r101_512x1024_80k_cityscapes_20200607_002403-f05f2345.pth', map_location='cpu')
+        load_checkpoint(teacher_model, './checkpoints/mask2former_swin-l-in22k-384x384-pre_8xb2-90k_cityscapes-512x1024_20221202_141901-28ad20f1.pth', map_location='cpu')
         logger.info("Successed loading weights for teacher model")
     
     from distillation.fmdv2 import FreqMaskingDistillLossv2
     dis_modules_s4 = FreqMaskingDistillLossv2(
         alpha=[args.alpha_1, args.alpha_2],
         student_dims=512, # student feature dimension
-        teacher_dims=2048,  # teacher feature dimension   e.g. 1024 for DA
+        teacher_dims=1536,  # teacher feature dimension   e.g. 1024 for DA; 2048 for upernet-r101
         query_hw=(16,32),  # shape of tearcher feature   e.g.(37,74) for DA
         pos_hw=(16, 32),  # shape of student feature 
-        pos_dims=2048,  # same to teacher_dims   e.g. 1024 for DA
+        pos_dims=1536,  # same to teacher_dims
         self_query=True,
         softmax_scale=[5.,5.],
         num_heads=16
@@ -249,11 +250,13 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
     evaluator.dataset_meta = dataset_meta
 
     model_module = unwrap_model(model)
+    # for m in model_module.backbone.backbone.modules():
+    #     if isinstance(m, nn.BatchNorm2d):
+    #         m.eval()  # 切换到 eval 模式 -> 不再更新统计
+    #         m.weight.requires_grad = False  # 不更新 γ
+    #         m.bias.requires_grad = False    # 不更新 β:
+            
     for m in model_module.modules():
-        # if isinstance(m, nn.BatchNorm2d):
-        #     m.eval()  # 切换到 eval 模式 -> 不再更新统计
-        #     m.weight.requires_grad = False  # 不更新 γ
-        #     m.bias.requires_grad = False    # 不更新 β:
         if isinstance(m, nn.ReLU):  # TODO
             m.inplace = False
             
@@ -377,6 +380,21 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
 
                     if args.f_distill:
                         feat_S_s4 = features.pop('feat_S_s4')
+                        # # 检查类型是否为 list 或 tuple
+                        # if isinstance(feat_T_s4, (list, tuple)):
+                        #     print(f"[Teacher] feat_T_s4 has {len(feat_T_s4)} feature maps")
+                        #     for i, f in enumerate(feat_T_s4):
+                        #         print(f"  [Teacher-{i}] type={type(f)}, shape={tuple(f.shape)}")
+                        # else:
+                        #     print(f"[Teacher] single tensor, shape={tuple(feat_T_s4.shape)}")
+                        # if isinstance(feat_S_s4, (list, tuple)):
+                        #     print(f"[Student] feat_S_s4 has {len(feat_S_s4)} feature maps")
+                        #     for i, f in enumerate(feat_S_s4):
+                        #         print(f"  [Student-{i}] type={type(f)}, shape={tuple(f.shape)}")
+                        # else:
+                        #     print(f"[Student] single tensor, shape={tuple(feat_S_s4.shape)}")
+                        # assert False, 'check shape'
+
                         spat_loss, freq_loss = dis_modules_s4(feat_S_s4, feat_T_s4)
                         handle_T.remove()
                         handle_S.remove()
@@ -453,7 +471,7 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
                     writer.add_scalar('var_average', var_sum.item()/var_cnt, global_step)
 
 
-        if args.do_online_eval and (epoch % 10 == 0 or epoch == args.num_epochs - 1):
+        if args.do_online_eval and (epoch % 20 == 0 or epoch == args.num_epochs - 1):
             barrier()
             time.sleep(0.1)
             metrics_dict = online_eval(args, model, dataloader_eval, evaluator=evaluator, logger=logger, ss=ss)

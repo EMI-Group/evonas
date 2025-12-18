@@ -1,0 +1,17 @@
+SegmentNAS/configs/mask2former/mask2former_swin-l-in22k-384x384-pre_8xb2-90k_cityscapes-512x1024.py
+--model_name mambasegment
+--optimizer adamw
+--num_epochs 108
+--learning_rate 6e-5
+--weight_decay 0.01
+--max_norm -1
+--log_directory ./runs/cityscapes/00_train/run_debug_nas/
+--multiprocessing_distributed
+--dist_url tcp://127.0.0.1:2361
+--devices 4,5,6,7
+
+--log_freq 1000
+--do_online_eval
+
+--dynamic_batch_size 1
+--kd_ratio 0.0

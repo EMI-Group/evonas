@@ -5,7 +5,7 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 
 import random
-import os, sys, time
+import os, sys, time, gc
 # os.environ["CUDA_VISIBLE_DEVICES"]="4,5,6,7"  # to set in config file
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, PROJECT_ROOT)
@@ -112,17 +112,27 @@ def parse_args():
 @torch.no_grad()
 def online_eval(args, model, dataloader_eval, evaluator=None, logger=None, ss=None):
     model.eval()
+    # 显存有限时，防止OOM
+    torch.cuda.synchronize()
+    gc.collect()
+    torch.cuda.empty_cache()
+
     for _, eval_sample_batched in enumerate(tqdm(dataloader_eval)):
         # random sample subnet
         sample_config = ss.sample(n_samples=1)[0]
         model_module = unwrap_model(model)
         model_module.backbone.backbone.set_sample_config(sample_config=sample_config)  # TODO
-        with mautocast(enabled=False):
+        with mautocast(enabled=args.amp):
             preds = model_module.val_step(eval_sample_batched)
         evaluator.process(data_samples=preds, data_batch=eval_sample_batched)
 
     metrics_dict = evaluator.evaluate(len(dataloader_eval.dataset))
     logger.info(metrics_dict)
+
+    # eval 完再清一次，避免回到 train 还残留
+    torch.cuda.synchronize()
+    gc.collect()
+    torch.cuda.empty_cache()
 
     return metrics_dict
 
@@ -148,6 +158,7 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
 
     # model = MambaDepth(args, version=args.encoder, inv_depth=False, max_depth=args.max_depth, pretrained=args.pretrain, remap=args.remap)
     model = MODELS.build(cfg.model)
+    model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
     model.init_weights()
     model.train()
     
@@ -250,11 +261,11 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
     evaluator.dataset_meta = dataset_meta
 
     model_module = unwrap_model(model)
-    for m in model_module.modules():
-        if isinstance(m, nn.BatchNorm2d):
-            m.eval()  # 切换到 eval 模式 -> 不再更新统计
-            m.weight.requires_grad = False  # 不更新 γ
-            m.bias.requires_grad = False    # 不更新 β
+    # for m in model_module.backbone.backbone.modules():
+    #     if isinstance(m, nn.BatchNorm2d):
+    #         m.eval()  # 切换到 eval 模式 -> 不再更新统计 # TODO 没效果，会被model.train()覆盖
+    #         m.weight.requires_grad = False  # 不更新 γ
+    #         m.bias.requires_grad = False    # 不更新 β
             
     ################## build optimizer ######################
     optimizer = build_optimizer(args, model_module, logger, dis_modules_s4)
@@ -562,7 +573,7 @@ def main():
     os.system(command)
 
     args_out_path = os.path.join(args.log_directory, args.model_name)
-    command = 'cp ' + sys.argv[1][1:] + ' ' + args_out_path
+    command = 'cp ' + sys.argv[1] + ' ' + args_out_path
     os.system(command)
 
     save_files = True

@@ -2,7 +2,7 @@ import torch
 import torch.backends.cudnn as cudnn
 
 import os, sys
-os.environ['CUDA_VISIBLE_DEVICES'] = '4'
+os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 import argparse
 import numpy as np
 import time

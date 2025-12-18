@@ -459,6 +459,15 @@ def build_optimizer(args, model, logger, dis_modules_s4):
         skip_keywords = model.no_weight_decay_keywords()
     parameters, no_decay_names = set_weight_decay(model, skip, skip_keywords)
     logger.info(f"No weight decay list: {no_decay_names}")
+
+    bb = set(model.backbone.parameters())
+    for g in parameters:
+        g["params"] = [p for p in g["params"] if p not in bb]
+    parameters = [g for g in parameters if g["params"]]
+    parameters.append(
+        {"params": list(bb), "lr": args.learning_rate * 0.1}
+    )
+
     if dis_modules_s4 is not None:
         parameters.append(
             {'params': dis_modules_s4.parameters(), 'lr': args.learning_rate * 0.5}

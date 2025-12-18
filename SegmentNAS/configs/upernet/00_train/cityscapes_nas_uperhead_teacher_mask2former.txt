@@ -1,0 +1,21 @@
+SegmentNAS/configs/upernet/upernet_nas_4xb2_40k_cityscapes_512x1024_uperhead.py
+SegmentNAS/configs/mask2former/mask2former_swin-l-in22k-384x384-pre_8xb2-90k_cityscapes-512x1024.py
+--model_name mambasegment
+--optimizer adamw
+--num_epochs 215
+--learning_rate 6e-5
+--weight_decay 0.05
+--max_norm -1
+--log_directory ./runs/cityscapes/00_train/run_nas_uperhead_teacher_mask2former/
+--multiprocessing_distributed
+--dist_url tcp://127.0.0.1:2361
+--devices 4,5,6,7
+
+--log_freq 1000
+--do_online_eval
+
+--dynamic_batch_size 1
+--kd_ratio 0.0
+--f_distill
+--alpha_1 0.001
+--alpha_2 0.0007

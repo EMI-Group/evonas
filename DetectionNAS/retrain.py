@@ -264,11 +264,11 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
     evaluator.dataset_meta = dataset_meta
 
     model_module = unwrap_model(model)
-    for m in model_module.modules():
-        if isinstance(m, nn.BatchNorm2d):
-            m.eval()  # 切换到 eval 模式 -> 不再更新统计
-            m.weight.requires_grad = False  # 不更新 γ
-            m.bias.requires_grad = False    # 不更新 β
+    # for m in model_module.backbone.backbone.modules():
+    #     if isinstance(m, nn.BatchNorm2d):
+    #         m.eval()  # 切换到 eval 模式 -> 不再更新统计
+    #         m.weight.requires_grad = False  # 不更新 γ
+    #         m.bias.requires_grad = False    # 不更新 β
 
     ################## build optimizer ######################
     optimizer = build_optimizer(args, model_module, logger, dis_modules_s4)

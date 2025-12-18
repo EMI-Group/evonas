@@ -83,7 +83,7 @@ def main():
     cfg = Config.fromfile(args.base_config)
     # print("Parsed dict:", config_list)
 
-    input_shape = (1,3,800,1344)
+    input_shape = (1,3,800,1280)
 
     results = []
     for config in config_list:

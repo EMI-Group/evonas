@@ -95,6 +95,8 @@ pip install ftfy==6.3.1
 
 2025/11/9 update SuperNet Training (fixed bug of architecture pool)
 
+2025/12/15 update SuperNet Training (for Detection and Segment, e.g. SyncBN, teacher model, hyper param)
+
 ------
 
 ##  Search Space
