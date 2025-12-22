@@ -30,3 +30,4 @@ model = dict(
         in_channels=256,
         ),
     )
+train_dataloader = dict(batch_size=4)

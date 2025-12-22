@@ -16,5 +16,5 @@ model = dict(
     neck=dict(
         in_channels=[64, 128, 256, 512],),
     )
-train_dataloader = dict(batch_size=4)
+train_dataloader = dict(batch_size=2)
 

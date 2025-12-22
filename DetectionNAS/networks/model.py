@@ -148,10 +148,7 @@ class MambaFPN(nn.Module):
         super().__init__()
 
         ### decoder
-        embed_dim = 512
-        final_dims = 64
         depths = [1,1,1,1]
-        self.last_ch = in_channels[3]
 
         self.spa_mab3 = SpatialMambaLayer(dim=in_channels[3], depth=depths[0], d_state=1, mlp_ratio=4.0)
         self.spa_mab2 = SpatialMambaLayer(dim=in_channels[2], depth=depths[1], d_state=1, mlp_ratio=4.0)
@@ -161,63 +158,38 @@ class MambaFPN(nn.Module):
         self.proj_out3 = nn.Conv2d(in_channels[3], in_channels[3]*2, kernel_size=3, stride=1, padding=1)
         self.proj_out2 = nn.Conv2d(in_channels[2], in_channels[2]*2, kernel_size=3, stride=1, padding=1)
         self.proj_out1 = nn.Conv2d(in_channels[1], in_channels[1]*2, kernel_size=3, stride=1, padding=1)
-        self.proj_final = nn.Conv2d(in_channels[0], final_dims, kernel_size=1, stride=1, padding=0)
-        
-        self.neck_type = neck_type
-        if self.neck_type == 'sp':
-            self.PPM = nn.Sequential(StripPooling(in_channels[3], (20,12)),
-                                     StripPooling(in_channels[3], (20,12)))
-        elif self.neck_type == 'ppm':
-            decoder_cfg = dict(
-                in_channels=in_channels,
-                in_index=[0, 1, 2, 3],
-                pool_scales=(1, 2, 3, 6),
-                channels=embed_dim,
-                dropout_ratio=0.0,
-                num_classes=32,
-                norm_cfg=dict(type='BN', requires_grad=True),
-                align_corners=False
-            )
-            self.PPM = PSP(**decoder_cfg)
-        else:
-            self.PPM = nn.Identity()
+        self.proj_final = nn.Conv2d(in_channels[0], out_channels, kernel_size=3, stride=1, padding=0)
             
-        self.conv_p3 = nn.Conv2d(in_channels[3]//2, out_channels, kernel_size=1)
-        self.conv_p2 = nn.Conv2d(in_channels[2]//2, out_channels, kernel_size=1)
-        self.conv_p1 = nn.Conv2d(in_channels[1]//2, out_channels, kernel_size=1)
-        self.conv_p0 = nn.Conv2d(final_dims, out_channels, kernel_size=1)
+        self.conv_p3 = nn.Conv2d(in_channels[3]*2, out_channels, kernel_size=1)
+        self.conv_p2 = nn.Conv2d(in_channels[2]*2, out_channels, kernel_size=1)
+        self.conv_p1 = nn.Conv2d(in_channels[1]*2, out_channels, kernel_size=1)
+
         self.max_pool = nn.MaxPool2d(kernel_size=1, stride=2)
     
 
     def forward(self, feats):
-        if self.neck_type == 'ppm':
-            ppm_out = self.PPM(feats)
-        else:
-            ppm_out = self.PPM(feats[3])
+        e3 = self.spa_mab3(feats[3])
+        e3 = self.proj_out3(e3)
 
-        e3 = self.spa_mab3(ppm_out)
-        e3 = e3 + feats[3]
-        e3 = nn.PixelShuffle(2)(self.proj_out3(e3))
-
-        e2 = self.spa_mab2(e3)
+        e2 = self.spa_mab2(nn.PixelShuffle(2)(e3))
         e2 = e2 + feats[2]
-        e2 = nn.PixelShuffle(2)(self.proj_out2(e2))
+        e2 = self.proj_out2(e2)
 
-        e1 = self.spa_mab1(e2)
+        e1 = self.spa_mab1(nn.PixelShuffle(2)(e2))
         e1 = e1 + feats[1]
-        e1 = nn.PixelShuffle(2)(self.proj_out1(e1))
+        e1 = self.proj_out1(e1)
 
-        e0 = self.spa_mab0(e1)
+        e0 = self.spa_mab0(nn.PixelShuffle(2)(e1))
         e0 = e0 + feats[0]
-        e0 = self.proj_final(e0)
+        e0 = self.proj_final(e0)  #  W/4
 
-        e0 = self.conv_p0(e0)  #  W/4
         e1 = self.conv_p1(e1)  #  W/8
         e2 = self.conv_p2(e2)  #  W/16
         e3 = self.conv_p3(e3)  #  W/32
         ee = self.max_pool(e3)   #  W/64
 
         out = (e0, e1, e2, e3, ee)
+
         return out
 
 

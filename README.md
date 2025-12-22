@@ -97,6 +97,8 @@ pip install ftfy==6.3.1
 
 2025/12/15 update SuperNet Training (for Detection and Segment, e.g. SyncBN, teacher model, hyper param)
 
+2025/12/22 update SuperNet Training (for Detection and Segment, mamba-based FPN)
+
 ------
 
 ##  Search Space

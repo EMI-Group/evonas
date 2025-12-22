@@ -29,6 +29,8 @@ from utils import build_iter_lambda_scheduler
 from mmdet.registry import MODELS, METRICS  
 from mmengine.evaluator import Evaluator
 from torch.utils.data import DataLoader
+from contextlib import nullcontext
+
 from mmengine.registry import init_default_scope
 init_default_scope('mmdet')
 from mmengine.runner import Runner, load_checkpoint
@@ -99,6 +101,8 @@ def parse_args():
                                                                         'if empty outputs to checkpoint folder', default='')
     # experimental
     parser.add_argument('--arch_pool', action='store_true', help='if set, will train arch pool of subnet during training')
+    parser.add_argument('--accum_steps', type=int, default=1,
+                    help='gradient accumulation steps across different batches')
 
     if sys.argv.__len__() == 2:
         arg_filename_with_prefix = '@' + sys.argv[1]
@@ -266,6 +270,9 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
     #         m.eval()  # 切换到 eval 模式 -> 不再更新统计 # TODO 没效果，会被model.train()覆盖
     #         m.weight.requires_grad = False  # 不更新 γ
     #         m.bias.requires_grad = False    # 不更新 β
+    for m in model_module.modules():
+        if isinstance(m, nn.ReLU):  # TODO
+            m.inplace = False
             
     ################## build optimizer ######################
     optimizer = build_optimizer(args, model_module, logger, dis_modules_s4)
@@ -353,8 +360,8 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
         random.seed(epoch)
         np.random.seed(epoch)
 
+        optimizer.zero_grad()
         for step, sample_batched in enumerate(dataloader):
-            optimizer.zero_grad()
             before_op_time = time.time()
             global_step += 1
 
@@ -368,99 +375,108 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
                     if args.f_distill:
                         feat_T_s4 = features.pop('feat_T_s4')
 
-            for _ in range(args.dynamic_batch_size):
-                with autocast(device_type='cuda', dtype=torch.float16, enabled=args.amp):
-                    # random sample subnet
-                    sample_config = ss.sample(n_samples=1)[0]
-                    model_module = unwrap_model(model)
-                    model_module.backbone.backbone.set_sample_config(sample_config=sample_config)
-                    batched = model_module.data_preprocessor(sample_batched, True)
-                    if args.f_distill:
-                        # handle_S = model_module.backbone.layer4.register_forward_hook(hook_fn_S)  # for resnet50
-                        handle_S = model_module.backbone.register_forward_hook(hook_fn_S)
+            for dyn_i in range(args.dynamic_batch_size):
+                sync_this_backward = ((step + 1) % args.accum_steps == 0) and (dyn_i == (args.dynamic_batch_size - 1))
+                ddp_ctx = nullcontext() if sync_this_backward else model.no_sync()
+                with ddp_ctx:
+                    with autocast(device_type='cuda', dtype=torch.float16, enabled=args.amp):
+                        # random sample subnet
+                        sample_config = ss.sample(n_samples=1)[0]
+                        model_module = unwrap_model(model)
+                        model_module.backbone.backbone.set_sample_config(sample_config=sample_config)
+                        batched = model_module.data_preprocessor(sample_batched, True)
+                        if args.f_distill:
+                            # handle_S = model_module.backbone.layer4.register_forward_hook(hook_fn_S)  # for resnet50
+                            handle_S = model_module.backbone.register_forward_hook(hook_fn_S)
 
-                    if isinstance(batched, dict):
-                        losses = model(**batched, mode='loss')
-                    elif isinstance(batched, (list, tuple)):
-                        losses = model(*batched, mode='loss')
-                    else:
-                        raise TypeError(f'Output of data_preprocessor must be dict/tuple/list, got {type(batched)}')
+                        if isinstance(batched, dict):
+                            losses = model(**batched, mode='loss')
+                        elif isinstance(batched, (list, tuple)):
+                            losses = model(*batched, mode='loss')
+                        else:
+                            raise TypeError(f'Output of data_preprocessor must be dict/tuple/list, got {type(batched)}')
 
-                    loss, log_vars = model_module.parse_losses(losses)
-                    # log_vars: {'loss_cls':0.8, 'loss_bbox':0.6, 'loss_mask':0.4, 'loss':1.8}
-                
-                    ### teacher model
-                    spat_loss = torch.tensor(0.0).cuda(args.gpu)
-                    freq_loss = torch.tensor(0.0).cuda(args.gpu)
-                    kd_loss = torch.tensor(0.0).cuda(args.gpu)
-
-                    if args.f_distill:
-                        feat_S_s4 = features.pop('feat_S_s4')
-
-                        # # 检查类型是否为 list 或 tuple
-                        # if isinstance(feat_T_s4, (list, tuple)):
-                        #     print(f"[Teacher] feat_T_s4 has {len(feat_T_s4)} feature maps")
-                        #     for i, f in enumerate(feat_T_s4):
-                        #         print(f"  [Teacher-{i}] type={type(f)}, shape={tuple(f.shape)}")
-                        # else:
-                        #     print(f"[Teacher] single tensor, shape={tuple(feat_T_s4.shape)}")
-                        # if isinstance(feat_S_s4, (list, tuple)):
-                        #     print(f"[Student] feat_S_s4 has {len(feat_S_s4)} feature maps")
-                        #     for i, f in enumerate(feat_S_s4):
-                        #         print(f"  [Student-{i}] type={type(f)}, shape={tuple(f.shape)}")
-                        # else:
-                        #     print(f"[Student] single tensor, shape={tuple(feat_S_s4.shape)}")
-                        # assert False, 'check shape'
-
-                        # [Teacher] feat_T_s4 has 4 feature maps
-                        # [Teacher-3] type=<class 'torch.Tensor'>, shape=(1, 768, 24, 42)
-                        # [Student] single tensor, shape=(1, 2048, 24, 42)
-
-                        # [Teacher] single tensor, shape=(1, 768, 24, 42)
-                        # [Student] single tensor, shape=(1, 512, 24, 42)
-
-                        spat_loss, freq_loss = dis_modules_s4(feat_S_s4, feat_T_s4)
-                        handle_T.remove()
-                        handle_S.remove()
-
-                    if args.kd_ratio > 0 or args.f_distill:
-                        loss = (1 - args.kd_ratio) * loss + args.kd_ratio * kd_loss + spat_loss + freq_loss
-
-                    if args.arch_pool:  # For comparison of methods from One-Shot Neural Architecture Search: Maximising Diversity to Overcome Catastrophic Forgetting
-                        mean_losses = torch.tensor(0.0).cuda(args.gpu)
-                        cur_code = ss.encode(sample_config)
-                        if len(arch_pool.pool) == arch_pool.pool_size:   
-                            total_loss = 0.0
-                            # pool branches
-                            with torch.no_grad():
-                                for arch_code in arch_pool.pool:
-                                    model_module.backbone.backbone.set_sample_config(sample_config=ss.decode(arch_code))
-                                    p_losses = model(**batched, mode='loss')
-                                    p_loss, _ = model_module.parse_losses(p_losses)
-                                    total_loss += p_loss
-                                    # print(f"  ├─ pool_arch[{arch_code}] 的 loss = {p_loss.item():.4f}")
-                            mean_losses = total_loss / len(arch_pool.pool)
-                        arch_pool.add_architecture(cur_code)
-                        loss = 0.8 * loss + 0.2 * mean_losses
+                        loss, log_vars = model_module.parse_losses(losses)
+                        # log_vars: {'loss_cls':0.8, 'loss_bbox':0.6, 'loss_mask':0.4, 'loss':1.8}
                     
-                    loss = loss / args.dynamic_batch_size
+                        ### teacher model
+                        spat_loss = torch.tensor(0.0).cuda(args.gpu)
+                        freq_loss = torch.tensor(0.0).cuda(args.gpu)
+                        kd_loss = torch.tensor(0.0).cuda(args.gpu)
+
+                        if args.f_distill:
+                            feat_S_s4 = features.pop('feat_S_s4')
+
+                            # # 检查类型是否为 list 或 tuple
+                            # if isinstance(feat_T_s4, (list, tuple)):
+                            #     print(f"[Teacher] feat_T_s4 has {len(feat_T_s4)} feature maps")
+                            #     for i, f in enumerate(feat_T_s4):
+                            #         print(f"  [Teacher-{i}] type={type(f)}, shape={tuple(f.shape)}")
+                            # else:
+                            #     print(f"[Teacher] single tensor, shape={tuple(feat_T_s4.shape)}")
+                            # if isinstance(feat_S_s4, (list, tuple)):
+                            #     print(f"[Student] feat_S_s4 has {len(feat_S_s4)} feature maps")
+                            #     for i, f in enumerate(feat_S_s4):
+                            #         print(f"  [Student-{i}] type={type(f)}, shape={tuple(f.shape)}")
+                            # else:
+                            #     print(f"[Student] single tensor, shape={tuple(feat_S_s4.shape)}")
+                            # assert False, 'check shape'
+
+                            # [Teacher] feat_T_s4 has 4 feature maps
+                            # [Teacher-3] type=<class 'torch.Tensor'>, shape=(1, 768, 24, 42)
+                            # [Student] single tensor, shape=(1, 2048, 24, 42)
+
+                            # [Teacher] single tensor, shape=(1, 768, 24, 42)
+                            # [Student] single tensor, shape=(1, 512, 24, 42)
+
+                            spat_loss, freq_loss = dis_modules_s4(feat_S_s4, feat_T_s4)
+                            handle_T.remove()
+                            handle_S.remove()
+
+                        if args.kd_ratio > 0 or args.f_distill:
+                            loss = (1 - args.kd_ratio) * loss + args.kd_ratio * kd_loss + spat_loss + freq_loss
+
+                        if args.arch_pool:  # For comparison of methods from One-Shot Neural Architecture Search: Maximising Diversity to Overcome Catastrophic Forgetting
+                            mean_losses = torch.tensor(0.0).cuda(args.gpu)
+                            cur_code = ss.encode(sample_config)
+                            if len(arch_pool.pool) == arch_pool.pool_size:   
+                                total_loss = 0.0
+                                # pool branches
+                                with torch.no_grad():
+                                    for arch_code in arch_pool.pool:
+                                        model_module.backbone.backbone.set_sample_config(sample_config=ss.decode(arch_code))
+                                        p_losses = model(**batched, mode='loss')
+                                        p_loss, _ = model_module.parse_losses(p_losses)
+                                        total_loss += p_loss
+                                        # print(f"  ├─ pool_arch[{arch_code}] 的 loss = {p_loss.item():.4f}")
+                                mean_losses = total_loss / len(arch_pool.pool)
+                            arch_pool.add_architecture(cur_code)
+                            loss = 0.8 * loss + 0.2 * mean_losses
+                        
+                        loss = loss / args.dynamic_batch_size
+                        loss_log = loss.detach()
+                        loss = loss / args.accum_steps
+
+                    if args.amp:
+                        scaler.scale(loss).backward()
+                    else:    
+                        loss.backward()
+
+            if (step + 1) % args.accum_steps == 0:
+
+                if args.max_norm > 0:
+                    if args.amp:
+                        scaler.unscale_(optimizer)
+                    grad_norm = nn.utils.clip_grad_norm_(model.parameters(), args.max_norm)
+                    # print(f'grad norm: {grad_norm:.2f}')
 
                 if args.amp:
-                    scaler.scale(loss).backward()
-                else:    
-                    loss.backward()
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    optimizer.step()
 
-            if args.max_norm > 0:
-                if args.amp:
-                    scaler.unscale_(optimizer)
-                grad_norm = nn.utils.clip_grad_norm_(model.parameters(), args.max_norm)
-                # print(f'grad norm: {grad_norm:.2f}')
-
-            if args.amp:
-                scaler.step(optimizer)
-                scaler.update()
-            else:
-                optimizer.step()
+                optimizer.zero_grad()
 
             scheduler.step()
             current_lr = optimizer.param_groups[0]['lr']
@@ -469,8 +485,8 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
             # show log and save result
             if global_step % 100 == 0:
                 if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
-                    logger.info('[epoch][s/s_per_e/gs]: [{}][{}/{}/{}], lr: {:.10f}, total_loss: {:.6f}, kd_loss: {:.6f}, spat_loss: {:.6f}, freq_loss: {:.6f}'.format(epoch, step, steps_per_epoch, global_step, current_lr, loss.item(), args.kd_ratio * kd_loss.item(), spat_loss.item(), freq_loss.item()))
-                    if np.isnan(loss.cpu().item()):
+                    logger.info('[epoch][s/s_per_e/gs]: [{}][{}/{}/{}], lr: {:.10f}, total_loss: {:.6f}, kd_loss: {:.6f}, spat_loss: {:.6f}, freq_loss: {:.6f}'.format(epoch, step, steps_per_epoch, global_step, current_lr, loss_log.item(), args.kd_ratio * kd_loss.item(), spat_loss.item(), freq_loss.item()))
+                    if torch.isnan(loss_log).any():
                         logger.info('NaN in loss occurred. Aborting training.')
                         return -1
 
@@ -485,11 +501,11 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
                 training_time_left = (num_total_steps / global_step - 1.0) * time_sofar
 
                 print_string = 'GPU: {} | examples/s: {:4.2f} | loss: {:.5f} | var sum: {:.3f} avg: {:.3f} | time elapsed: {:.2f}h | time left: {:.2f}h'
-                logger.info(print_string.format(args.gpu, examples_per_sec, loss.item(), var_sum.item(), var_sum.item()/var_cnt, time_sofar, training_time_left))
+                logger.info(print_string.format(args.gpu, examples_per_sec, loss_log.item(), var_sum.item(), var_sum.item()/var_cnt, time_sofar, training_time_left))
 
                 if not args.multiprocessing_distributed or (args.multiprocessing_distributed
                                                             and args.rank % ngpus_per_node == 0):
-                    writer.add_scalar('train_loss', loss.item(), global_step)
+                    writer.add_scalar('train_loss', loss_log.item(), global_step)
                     writer.add_scalar('learning_rate', current_lr, global_step)
                     writer.add_scalar('learning_rate_kd', current_lr_kd, global_step)
                     writer.add_scalar('var_average', var_sum.item()/var_cnt, global_step)

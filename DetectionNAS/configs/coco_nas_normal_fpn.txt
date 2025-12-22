@@ -7,7 +7,7 @@ DetectionNAS/configs/mask_rcnn_swin_s_p4_w7_fpn_amp_ms_crop_3x_coco.py
 --learning_rate 1e-4
 --weight_decay 0.05
 --max_norm -1
---log_directory ./runs/coco/max_subnet/
+--log_directory ./runs/coco/max_subnet_baseline_kd/
 --multiprocessing_distributed
 --dist_url tcp://127.0.0.1:2363
 --devices 4,5,6,7
@@ -25,3 +25,4 @@ DetectionNAS/configs/mask_rcnn_swin_s_p4_w7_fpn_amp_ms_crop_3x_coco.py
 --alpha_1 0.001
 --alpha_2 0.0007
 --amp
+--accum_steps 2

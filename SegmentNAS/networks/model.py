@@ -130,11 +130,9 @@ class UPerHead_with_mamba(BaseDecodeHead):
             act_cfg=self.act_cfg)
         
         ### FPN
-        final_dims = 64
         depths = [1,1,1,1]
-        self.last_ch = in_channels[3]
 
-        self.spa_mab3 = SpatialMambaLayer(dim=in_channels[3], depth=depths[0], d_state=1)
+        # self.spa_mab3 = SpatialMambaLayer(dim=in_channels[3], depth=depths[0], d_state=1)
         self.spa_mab2 = SpatialMambaLayer(dim=in_channels[2], depth=depths[1], d_state=1)
         self.spa_mab1 = SpatialMambaLayer(dim=in_channels[1], depth=depths[2], d_state=1)
         self.spa_mab0 = SpatialMambaLayer(dim=in_channels[0], depth=depths[3], d_state=1)
@@ -142,34 +140,30 @@ class UPerHead_with_mamba(BaseDecodeHead):
         self.proj_out3 = nn.Conv2d(in_channels[3], in_channels[3]*2, kernel_size=3, stride=1, padding=1)
         self.proj_out2 = nn.Conv2d(in_channels[2], in_channels[2]*2, kernel_size=3, stride=1, padding=1)
         self.proj_out1 = nn.Conv2d(in_channels[1], in_channels[1]*2, kernel_size=3, stride=1, padding=1)
-        self.proj_final = nn.Conv2d(in_channels[0], final_dims, kernel_size=1, stride=1, padding=0)
+        self.proj_final = nn.Conv2d(in_channels[0], self.channels, kernel_size=3, stride=1, padding=0)
             
-        self.conv_p3 = nn.Conv2d(in_channels[3]//2, self.channels, kernel_size=1)
-        self.conv_p2 = nn.Conv2d(in_channels[2]//2, self.channels, kernel_size=1)
-        self.conv_p1 = nn.Conv2d(in_channels[1]//2, self.channels, kernel_size=1)
-        self.conv_p0 = nn.Conv2d(final_dims, self.channels, kernel_size=1)
+        self.conv_p3 = nn.Conv2d(in_channels[3]*2, self.channels, kernel_size=1)
+        self.conv_p2 = nn.Conv2d(in_channels[2]*2, self.channels, kernel_size=1)
+        self.conv_p1 = nn.Conv2d(in_channels[1]*2, self.channels, kernel_size=1)
 
 
     def _forward_feature(self, feats):
         ppm_out = self.PPM(feats[3])
 
-        e3 = self.spa_mab3(ppm_out)
-        e3 = e3 + feats[3]
-        e3 = nn.PixelShuffle(2)(self.proj_out3(e3))
+        e3 = self.proj_out3(ppm_out)
 
-        e2 = self.spa_mab2(e3)
+        e2 = self.spa_mab2(nn.PixelShuffle(2)(e3))
         e2 = e2 + feats[2]
-        e2 = nn.PixelShuffle(2)(self.proj_out2(e2))
+        e2 = self.proj_out2(e2)
 
-        e1 = self.spa_mab1(e2)
+        e1 = self.spa_mab1(nn.PixelShuffle(2)(e2))
         e1 = e1 + feats[1]
-        e1 = nn.PixelShuffle(2)(self.proj_out1(e1))
+        e1 = self.proj_out1(e1)
 
-        e0 = self.spa_mab0(e1)
+        e0 = self.spa_mab0(nn.PixelShuffle(2)(e1))
         e0 = e0 + feats[0]
-        e0 = self.proj_final(e0)
+        e0 = self.proj_final(e0)  #  W/4
 
-        e0 = self.conv_p0(e0)  #  W/4
         e1 = self.conv_p1(e1)  #  W/8
         e2 = self.conv_p2(e2)  #  W/16
         e3 = self.conv_p3(e3)  #  W/32

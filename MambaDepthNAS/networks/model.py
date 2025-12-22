@@ -267,19 +267,19 @@ class MambaDepth(nn.Module):
 
         e3 = self.spa_mab3(ppm_out)
         e3 = e3 + feats[3]
-        e3 = nn.PixelShuffle(2)(self.proj_out3(e3))
+        e3 = nn.PixelShuffle(2)(self.proj_out3(e3))  # self.proj_out3(e3)  1/32
 
         e2 = self.spa_mab2(e3)
         e2 = e2 + feats[2]
-        e2 = nn.PixelShuffle(2)(self.proj_out2(e2))
+        e2 = nn.PixelShuffle(2)(self.proj_out2(e2))  # self.proj_out2(e2)  1/16
 
         e1 = self.spa_mab1(e2)
         e1 = e1 + feats[1]
-        e1 = nn.PixelShuffle(2)(self.proj_out1(e1))
+        e1 = nn.PixelShuffle(2)(self.proj_out1(e1))  # self.proj_out1(e1)  1/8
 
         e0 = self.spa_mab0(e1)
         e0 = e0 + feats[0]
-        e0 = self.proj_final(e0)
+        e0 = self.proj_final(e0)  # self.proj_final(e0)  1/4
 
         d1 = self.disp_head1(e0, 4)
 
