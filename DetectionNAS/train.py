@@ -172,7 +172,7 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
     if args.kd_ratio > 0 or args.f_distill:
         t_cfg = Config.fromfile(args.teacher_config)
         teacher_model = MODELS.build(t_cfg.model)
-        load_checkpoint(teacher_model, './checkpoints/mask_rcnn_swin-s-p4-w7_fpn_fp16_ms-crop-3x_coco_20210903_104808-b92c91f1.pth', map_location='cpu')
+        load_checkpoint(teacher_model, './checkpoints/cascade_mask_rcnn_convnext-s_p4_w7_fpn_giou_4conv1f_fp16_ms-crop_3x_coco_20220510_201004-3d24f5a4.pth', map_location='cpu', strict=True)
         logger.info("Successed loading weights for teacher model")
     
     from distillation.fmdv2 import FreqMaskingDistillLossv2
@@ -265,11 +265,7 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
     evaluator.dataset_meta = dataset_meta
 
     model_module = unwrap_model(model)
-    # for m in model_module.backbone.backbone.modules():
-    #     if isinstance(m, nn.BatchNorm2d):
-    #         m.eval()  # 切换到 eval 模式 -> 不再更新统计 # TODO 没效果，会被model.train()覆盖
-    #         m.weight.requires_grad = False  # 不更新 γ
-    #         m.bias.requires_grad = False    # 不更新 β
+
     for m in model_module.modules():
         if isinstance(m, nn.ReLU):  # TODO
             m.inplace = False
@@ -282,7 +278,7 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
 
     ss = MambaSearchSpace(args.mlp_ratio, args.d_state, args.ssd_expand, open_depth=args.open_depth)
 
-    # metrics_dict = online_eval(args, model, dataloader_eval, evaluator=evaluator, logger=logger, ss=ss)
+    # metrics_dict = online_eval(args, teacher_model, dataloader_eval, evaluator=evaluator, logger=logger, ss=ss)
     # assert False,'test'
 
     # Logging
@@ -371,7 +367,9 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
                     with autocast(device_type='cuda', dtype=torch.float16, enabled=args.amp):
                         model_module = unwrap_model(teacher_model)
                         handle_T = model_module.backbone.register_forward_hook(hook_fn_T)
-                        tearcher_preds = model_module.val_step(sample_batched)
+                        # tearcher_preds = model_module.val_step(sample_batched)
+                        batched = model_module.data_preprocessor(sample_batched, False)
+                        model_module.extract_feat(batched["inputs"])  # 输出的是FPN之后的结果
                     if args.f_distill:
                         feat_T_s4 = features.pop('feat_T_s4')
 
@@ -430,6 +428,11 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
                             # [Student] single tensor, shape=(1, 512, 24, 42)
 
                             spat_loss, freq_loss = dis_modules_s4(feat_S_s4, feat_T_s4)
+                            
+                            w_ratio = 0.2 + 0.8 * (1 - global_step / num_total_steps)
+                            spat_loss = w_ratio * spat_loss
+                            freq_loss = w_ratio * freq_loss
+                            
                             handle_T.remove()
                             handle_S.remove()
 

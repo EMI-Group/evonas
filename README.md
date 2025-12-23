@@ -99,6 +99,8 @@ pip install ftfy==6.3.1
 
 2025/12/22 update SuperNet Training (for Detection and Segment, mamba-based FPN)
 
+2025/12/23 update SuperNet Training (update tearcher model for Detection ———— mask2former, mIoU=83.65)
+
 ------
 
 ##  Search Space

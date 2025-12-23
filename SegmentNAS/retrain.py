@@ -170,7 +170,7 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
     if args.kd_ratio > 0 or args.f_distill:
         t_cfg = Config.fromfile(args.teacher_config)
         teacher_model = MODELS.build(t_cfg.model)
-        load_checkpoint(teacher_model, './checkpoints/cityscapes_vitl_mIoU_86.4.pth', map_location='cpu')
+        load_checkpoint(teacher_model, './checkpoints/mask2former_swin-l-in22k-384x384-pre_8xb2-90k_cityscapes-512x1024_20221202_141901-28ad20f1.pth', map_location='cpu', strict=True)
         logger.info("Successed loading weights for teacher model")
     
     from distillation.fmdv2 import FreqMaskingDistillLossv2
@@ -389,6 +389,10 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
                         alig_feat_T_s4  = torch.nn.functional.interpolate(
                             feat_T_s4, size=(feat_S_s4.shape[2], feat_S_s4.shape[3]), mode='bilinear', align_corners=False)
                         spat_loss, freq_loss = dis_modules_s4(feat_S_s4, alig_feat_T_s4)
+
+                        w_ratio = 0.2 + 0.8 * (1 - global_step / num_total_steps)
+                        spat_loss = w_ratio * spat_loss
+                        freq_loss = w_ratio * freq_loss
                         handle_T.remove()
                         handle_S.remove()
 

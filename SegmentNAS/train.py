@@ -55,7 +55,7 @@ def parse_args():
     # Search space
     parser.add_argument('--mlp_ratio',                 type=str2list, default=[4.0])
     parser.add_argument('--d_state',                   type=str2list, default=[64])
-    parser.add_argument('--ssd_expand',                type=str2list, default=[2])
+    parser.add_argument('--ssd_expand',                type=str2list, default=[4])
     parser.add_argument('--open_depth',                action='store_true', help='if set, will open depth sampling, otherwise use fixed depth for all stages')
     parser.add_argument('--min_ones',                  type=int,    help='minimum number of active layers in each stage during sampling', default=1)
     parser.add_argument('--width_multiplier',          type=float, help='factor to scale the number of channels in each layer (applies only to final model)', default=1.0)
@@ -156,7 +156,7 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
         teacher_model = MODELS.build(t_cfg.model)
         # load_checkpoint(teacher_model, './checkpoints/cityscapes_vitl_mIoU_86.4.pth', map_location='cpu')
         # load_checkpoint(teacher_model, './checkpoints/upernet_r101_512x1024_80k_cityscapes_20200607_002403-f05f2345.pth', map_location='cpu')
-        load_checkpoint(teacher_model, './checkpoints/mask2former_swin-l-in22k-384x384-pre_8xb2-90k_cityscapes-512x1024_20221202_141901-28ad20f1.pth', map_location='cpu')
+        load_checkpoint(teacher_model, './checkpoints/mask2former_swin-l-in22k-384x384-pre_8xb2-90k_cityscapes-512x1024_20221202_141901-28ad20f1.pth', map_location='cpu', strict=True)
         logger.info("Successed loading weights for teacher model")
     
     from distillation.fmdv2 import FreqMaskingDistillLossv2
@@ -396,6 +396,11 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
                         # assert False, 'check shape'
 
                         spat_loss, freq_loss = dis_modules_s4(feat_S_s4, feat_T_s4)
+
+                        w_ratio = 0.2 + 0.8 * (1 - global_step / num_total_steps)
+                        spat_loss = w_ratio * spat_loss
+                        freq_loss = w_ratio * freq_loss
+
                         handle_T.remove()
                         handle_S.remove()
 
@@ -548,7 +553,7 @@ def main():
     os.system(command)
 
     args_out_path = os.path.join(args.log_directory, args.model_name)
-    command = 'cp ' + sys.argv[1][1:] + ' ' + args_out_path
+    command = 'cp ' + sys.argv[1] + ' ' + args_out_path
     os.system(command)
 
     save_files = True

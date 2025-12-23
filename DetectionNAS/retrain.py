@@ -171,7 +171,7 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
     if args.kd_ratio > 0 or args.f_distill:
         t_cfg = Config.fromfile(args.teacher_config)
         teacher_model = MODELS.build(t_cfg.model)
-        load_checkpoint(teacher_model, './checkpoints/mask_rcnn_swin-s-p4-w7_fpn_fp16_ms-crop-3x_coco_20210903_104808-b92c91f1.pth', map_location='cpu')
+        load_checkpoint(teacher_model, './checkpoints/cascade_mask_rcnn_convnext-s_p4_w7_fpn_giou_4conv1f_fp16_ms-crop_3x_coco_20220510_201004-3d24f5a4.pth', map_location='cpu', strict=True)
         logger.info("Successed loading weights for teacher model")
     
     from distillation.fmdv2 import FreqMaskingDistillLossv2
@@ -387,6 +387,11 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
                         feat_S_s4 = features.pop('feat_S_s4')
 
                         spat_loss, freq_loss = dis_modules_s4(feat_S_s4, feat_T_s4)
+
+                        w_ratio = 0.2 + 0.8 * (1 - global_step / num_total_steps)
+                        spat_loss = w_ratio * spat_loss
+                        freq_loss = w_ratio * freq_loss
+
                         handle_T.remove()
                         handle_S.remove()
 
