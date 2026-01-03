@@ -1,0 +1,21 @@
+--model_name MambaDepth
+--encoder SuperNet
+--devices 0
+
+--dataset nyu
+--max_depth 10
+--input_height 480
+--input_width 640
+--image_path ./files/raw_rgb_nyu
+--outdir ./files/vis_depth_nyu
+
+--mlp_ratio "[2.0, 3.5, 3.0, 3.0]"
+--d_state "[64, 48, 64]"
+--ssd_expand "[2, 3, 4]"
+--depth "[[0, 1], [1, 0, 1, 0], [1, 1, 1, 1, 1, 1, 1, 0], [1, 0, 1, 0]]"
+
+--ckpt_path /data/code_yzh/DistillNAS/final_runs/03_retrain_nyu/OFA_retrain/22_retrain_nyu_small/abs_rel_best_weight.pth
+
+
+--post_process
+--pred_only

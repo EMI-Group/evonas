@@ -388,7 +388,8 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
 
                         spat_loss, freq_loss = dis_modules_s4(feat_S_s4, feat_T_s4)
 
-                        w_ratio = 0.2 + 0.8 * (1 - global_step / num_total_steps)
+                        warmup = min(1.0, global_step / (0.05 * num_total_steps))  # 5% steps warmup，可改0.1
+                        w_ratio = warmup * (0.2 + 0.8 * (1 - global_step / num_total_steps))
                         spat_loss = w_ratio * spat_loss
                         freq_loss = w_ratio * freq_loss
 

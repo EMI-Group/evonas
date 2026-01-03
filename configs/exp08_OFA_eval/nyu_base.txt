@@ -1,0 +1,33 @@
+--model_name MambaDepth_retrain
+--encoder SuperNet
+--dataset nyu
+--data_path /data/dataset/NYU_Depth_V2/sync/
+--gt_path /data/dataset/NYU_Depth_V2/sync/
+--filenames_file data_splits/nyudepthv2_train_files_with_gt_dense.txt
+--num_threads 1
+--input_height 480
+--input_width 640
+--max_depth 10
+--do_random_rotate
+--degree 2.5
+--log_directory ./runs/debug/
+--multiprocessing_distributed
+--dist_url tcp://127.0.0.1:2362
+--devices 0
+
+--log_freq 1000
+--do_online_eval
+--eval_freq 1000
+--data_path_eval /data/dataset/NYU_Depth_V2/test/
+--gt_path_eval /data/dataset/NYU_Depth_V2/test/
+--filenames_file_eval data_splits/nyudepthv2_test_files_with_gt.txt
+--min_depth_eval 1e-3
+--max_depth_eval 10
+--eigen_crop
+
+--ckpt_path /data/code_yzh/DistillNAS/runs/exp06_OFA_retrain/21_retrain_nyu_base/MambaDepth_retrain/model-22000-best_d1_0.93324
+
+--mlp_ratio "[2.0, 3.5, 3.0, 3.0]"
+--d_state "[64, 48, 64]"
+--ssd_expand "[2, 3, 4]"
+--depth "[[0, 1], [1, 0, 1, 0], [1, 1, 1, 1, 1, 1, 1, 0], [1, 0, 1, 0]]"

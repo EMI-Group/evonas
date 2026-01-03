@@ -86,8 +86,8 @@ def main(src: str, dst: str, n: int, seed: int, need_mask: bool, ids: Optional[L
 
 # python make_coco_subset.py \
 #   --src ./instances_val2017.json \
-#   --dst ./instances_val1000.json \
-#   -n 1000 --seed 0
+#   --dst ./instances_val2000.json \
+#   -n 2000 --seed 0
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()

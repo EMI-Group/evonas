@@ -1,0 +1,34 @@
+--model_name MambaDepth_retrain
+--encoder SuperNet
+--dataset kitti
+--data_path /data/dataset/KITTI/
+--gt_path /data/dataset/KITTI/data_depth_annotated/
+--filenames_file data_splits/eigen_train_files_with_gt.txt
+--num_threads 1
+--input_height 352
+--input_width 1216
+--max_depth 80
+--do_kb_crop
+--do_random_rotate
+--degree 1.0
+--log_directory ./runs/debug/
+--multiprocessing_distributed
+--dist_url tcp://127.0.0.1:2362
+--devices 0
+
+--log_freq 1000
+--do_online_eval
+--eval_freq 1000
+--data_path_eval /data/dataset/KITTI/
+--gt_path_eval /data/dataset/KITTI/data_depth_annotated/
+--filenames_file_eval data_splits/eigen_test_files_with_gt.txt
+--min_depth_eval 1e-3
+--max_depth_eval 80
+--garg_crop
+
+--ckpt_path /data/code_yzh/DistillNAS/runs/exp06_OFA_retrain/11_retrain_kitti_base/MambaDepth_retrain/model-13000-best_abs_rel_0.05375
+
+--mlp_ratio "[3.0, 3.5, 3.5, 4.0]"
+--d_state "[48, 32, 32]"
+--ssd_expand "[1, 4, 4]"
+--depth "[[0, 1], [1, 1, 1, 0], [1, 1, 0, 1, 1, 1, 0, 0], [0, 0, 0, 1]]"

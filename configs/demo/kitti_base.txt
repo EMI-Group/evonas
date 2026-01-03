@@ -1,0 +1,21 @@
+--model_name MambaDepth
+--encoder SuperNet
+--devices 0
+
+--dataset kitti
+--max_depth 80
+--input_height 352
+--input_width 1216
+--image_path ./files/raw_rgb_kitti
+--outdir ./files/vis_depth_kitti
+
+--mlp_ratio "[3.0, 3.5, 3.5, 4.0]"
+--d_state "[48, 32, 32]"
+--ssd_expand "[1, 4, 4]"
+--depth "[[0, 1], [1, 1, 1, 0], [1, 1, 0, 1, 1, 1, 0, 0], [0, 0, 0, 1]]"
+
+--ckpt_path /data/code_yzh/DistillNAS/final_runs/03_retrain_kitti/OFA_retrain/11_retrain_kitti_base/MambaDepth_retrain/model-13000-best_abs_rel_0.05375
+
+
+--post_process
+--pred_only
