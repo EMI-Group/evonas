@@ -75,11 +75,11 @@ def parse_args():
     parser.add_argument('--optimizer',                 type=str,   help='optimizer to use', default='adamw')
     parser.add_argument('--learning_rate',             type=float, help='initial learning rate', default=1e-4)
     parser.add_argument('--weight_decay',              type=float, help='weight decay for optimizer', default=0.05)
-    parser.add_argument('--total_iters',               type=int,   help='number of iters for training', default=160000)
+    parser.add_argument('--num_epochs',                type=int,   help='number of epochs', default=50)
     parser.add_argument('--dynamic_batch_size',        type=int,   help='the number of dynamic batch size', default=1)
     parser.add_argument('--max_norm',                  type=float, help='maximum norm for gradient clipping, (grad clip is not used if -1 or 0)', default=-1)
     parser.add_argument('--amp',                                   help='enable mixed precision (AMP)', action='store_true')
-    parser.add_argument('--eval_interval',                  type=int,   help='evaluation frequency', default=16000)
+    parser.add_argument('--eval_freq',                  type=int,   help='evaluation frequency', default=1)
 
     # Multi-gpu training
     parser.add_argument('--world_size',                type=int,   help='number of nodes for distributed training', default=1)
@@ -95,7 +95,8 @@ def parse_args():
     parser.add_argument('--do_online_eval',                        help='if set, perform online eval in every eval_freq steps', action='store_true')
     parser.add_argument('--eval_summary_directory',    type=str,   help='output directory for eval summary,'
                                                                         'if empty outputs to checkpoint folder', default='')
-
+    # experimental
+    parser.add_argument('--arch_pool', action='store_true', help='if set, will train arch pool of subnet during training')
 
     if sys.argv.__len__() == 2:
         arg_filename_with_prefix = '@' + sys.argv[1]
@@ -109,12 +110,12 @@ def parse_args():
 @torch.no_grad()
 def online_eval(args, model, dataloader_eval, evaluator=None, logger=None, ss=None):
     model.eval()
-    for id, eval_sample_batched in enumerate(tqdm(dataloader_eval)):
+    for _, eval_sample_batched in enumerate(tqdm(dataloader_eval)):
         # random sample subnet
         sample_config = ss.sample(n_samples=1)[0]
         model_module = unwrap_model(model)
         model_module.backbone.backbone.set_sample_config(sample_config=sample_config)
-        with mautocast(enabled=args.amp):
+        with mautocast(enabled=False):
             preds = model_module.val_step(eval_sample_batched)
         evaluator.process(data_samples=preds, data_batch=eval_sample_batched)
 
@@ -281,8 +282,7 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
                 eval_summary_path = os.path.join(args.log_directory, args.model_name, 'eval')
             eval_summary_writer = SummaryWriter(eval_summary_path, flush_secs=30)
 
-    global_step = 0  
-    last_epoch = -1
+    global_step = -1
     key_metrics = ['mIoU']
     best_vals = {k: float('-inf') for k in key_metrics}
     best_steps = {k: -1 for k in key_metrics}
@@ -296,12 +296,16 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
 
     if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
         logger.info("== Initial variables' sum: {:.3f}, avg: {:.3f}".format(var_sum, var_sum/var_cnt))
-        logger.info("== Total training steps: {}".format(args.total_iters))
+
+    steps_per_epoch = len(dataloader)
+    num_total_steps = args.num_epochs * steps_per_epoch
+    epoch = 0
+    logger.info("== Total training steps: {}".format(num_total_steps))
 
     scheduler = build_iter_poly_scheduler(
         optimizer,
-        warmup_iters=1500 if args.total_iters > 30000 else int(0.05 * args.total_iters),
-        total_iters=args.total_iters,
+        warmup_iters=1500 if num_total_steps > 30000 else int(0.05 * num_total_steps),
+        total_iters=num_total_steps,
         start_factor=1e-6,
         power=1.0
     )
@@ -316,133 +320,164 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
     def hook_fn_T(module, input, output):
         features['feat_T_s4'] = output[3]
 
+    if args.arch_pool:
+        arch_pool = ArchitecturePool(pool_size=3)
+
     ################### train loop ########################
     model.train()
+    while epoch < args.num_epochs:
+        if args.distributed:
+            # dataloader.sampler.set_epoch(epoch)
+            dataloader.batch_sampler.sampler.set_epoch(epoch)
+        
+        random.seed(epoch)
+        np.random.seed(epoch)
 
-    train_loader_iter = iter(dataloader)
-    iters_per_epoch = len(dataloader)
+        for step, sample_batched in enumerate(dataloader):
+            optimizer.zero_grad()
+            before_op_time = time.time()
+            global_step += 1
 
-    while global_step < args.total_iters:
+            model_module = unwrap_model(model)
+            batched = model_module.data_preprocessor(sample_batched, True)
 
-        global_step += 1
-        current_epoch = (global_step - 1) // iters_per_epoch
-        if current_epoch != last_epoch:
-            dataloader.sampler.set_epoch(current_epoch)
-            # 固定随机种子，为了保证每个iter采样架构一致
-            random.seed(current_epoch)
-            np.random.seed(current_epoch)
-            last_epoch = current_epoch
-    
-        optimizer.zero_grad()
-        before_op_time = time.time()
+            if args.kd_ratio > 0 or args.f_distill:
+                with torch.no_grad():
+                    teacher_model.eval()
+                    with autocast(device_type='cuda', dtype=torch.float16, enabled=args.amp):
+                        t_module = unwrap_model(teacher_model)
+                        handle_T = t_module.backbone.register_forward_hook(hook_fn_T)
+                        # fix_inputs, ph, pw = pad_to_multiple(batched['inputs'], n=14, pad_value=0.0)  # for DA
+                        # _ = t_module.extract_feat(fix_inputs)
+                        _ = t_module.extract_feat(batched['inputs'])
 
-        try:
-            sample_batched = next(train_loader_iter)
-        except StopIteration:
-            train_loader_iter = iter(dataloader)
-            sample_batched = next(train_loader_iter)
+                    if args.f_distill:
+                        feat_T_s4 = features.pop('feat_T_s4')
+                        # feat_T_s4 = feat_T_s4[:,:,feat_T_s4.shape[-2]-1, feat_T_s4.shape[-1]-1]
+                        
 
-        model_module = unwrap_model(model)
-        batched = model_module.data_preprocessor(sample_batched, True)
-
-        if args.kd_ratio > 0 or args.f_distill:
-            with torch.no_grad():
-                teacher_model.eval()
+            for _ in range(args.dynamic_batch_size):
                 with autocast(device_type='cuda', dtype=torch.float16, enabled=args.amp):
-                    t_module = unwrap_model(teacher_model)
-                    handle_T = t_module.backbone.register_forward_hook(hook_fn_T)
-                    # fix_inputs, ph, pw = pad_to_multiple(batched['inputs'], n=14, pad_value=0.0)  # for DA
-                    # _ = t_module.extract_feat(fix_inputs)
-                    _ = t_module.extract_feat(batched['inputs'])
+                    # random sample subnet
+                    sample_config = ss.sample(n_samples=1)[0]
+                    model_module.backbone.backbone.set_sample_config(sample_config=sample_config)
+                    if args.f_distill:
+                        # handle_S = model_module.backbone.layer4.register_forward_hook(hook_fn_S)  # for resnet50
+                        handle_S = model_module.backbone.register_forward_hook(hook_fn_S)
 
-                if args.f_distill:
-                    feat_T_s4 = features.pop('feat_T_s4')            
+                    if isinstance(batched, dict):
+                        losses = model(**batched, mode='loss')
+                    elif isinstance(batched, (list, tuple)):
+                        losses = model(*batched, mode='loss')
+                    else:
+                        raise TypeError(f'Output of data_preprocessor must be dict/tuple/list, got {type(batched)}')
 
-        for _ in range(args.dynamic_batch_size):
-            with autocast(device_type='cuda', dtype=torch.float16, enabled=args.amp):
-                # random sample subnet
-                sample_config = ss.sample(n_samples=1)[0]
-                model_module.backbone.backbone.set_sample_config(sample_config=sample_config)
-                if args.f_distill:
-                    handle_S = model_module.backbone.register_forward_hook(hook_fn_S)
+                    loss, log_vars = model_module.parse_losses(losses)
+                
+                    ### teacher model
+                    spat_loss = torch.tensor(0.0).cuda(args.gpu)
+                    freq_loss = torch.tensor(0.0).cuda(args.gpu)
+                    kd_loss = torch.tensor(0.0).cuda(args.gpu)
 
-                if isinstance(batched, dict):
-                    losses = model(**batched, mode='loss')
-                elif isinstance(batched, (list, tuple)):
-                    losses = model(*batched, mode='loss')
-                else:
-                    raise TypeError(f'Output of data_preprocessor must be dict/tuple/list, got {type(batched)}')
+                    if args.f_distill:
+                        feat_S_s4 = features.pop('feat_S_s4')
+                        # # 检查类型是否为 list 或 tuple
+                        # if isinstance(feat_T_s4, (list, tuple)):
+                        #     print(f"[Teacher] feat_T_s4 has {len(feat_T_s4)} feature maps")
+                        #     for i, f in enumerate(feat_T_s4):
+                        #         print(f"  [Teacher-{i}] type={type(f)}, shape={tuple(f.shape)}")
+                        # else:
+                        #     print(f"[Teacher] single tensor, shape={tuple(feat_T_s4.shape)}")
+                        # if isinstance(feat_S_s4, (list, tuple)):
+                        #     print(f"[Student] feat_S_s4 has {len(feat_S_s4)} feature maps")
+                        #     for i, f in enumerate(feat_S_s4):
+                        #         print(f"  [Student-{i}] type={type(f)}, shape={tuple(f.shape)}")
+                        # else:
+                        #     print(f"[Student] single tensor, shape={tuple(feat_S_s4.shape)}")
+                        # assert False, 'check shape'
 
-                loss, log_vars = model_module.parse_losses(losses)
-            
-                ### teacher model
-                spat_loss = torch.tensor(0.0).cuda(args.gpu)
-                freq_loss = torch.tensor(0.0).cuda(args.gpu)
-                kd_loss = torch.tensor(0.0).cuda(args.gpu)
+                        spat_loss, freq_loss = dis_modules_s4(feat_S_s4, feat_T_s4)
 
-                if args.f_distill:
-                    feat_S_s4 = features.pop('feat_S_s4')
-                    spat_loss, freq_loss = dis_modules_s4(feat_S_s4, feat_T_s4)
+                        # w_ratio = 0.2 + 0.8 * (1 - global_step / num_total_steps)
+                        # spat_loss = w_ratio * spat_loss
+                        # freq_loss = w_ratio * freq_loss
 
-                    handle_T.remove()
-                    handle_S.remove()
+                        handle_T.remove()
+                        handle_S.remove()
 
-                if args.kd_ratio > 0 or args.f_distill:
-                    loss = (1 - args.kd_ratio) * loss + args.kd_ratio * kd_loss + spat_loss + freq_loss
+                    if args.kd_ratio > 0 or args.f_distill:
+                        loss = (1 - args.kd_ratio) * loss + args.kd_ratio * kd_loss + spat_loss + freq_loss
+                    
+                    if args.arch_pool:  # For comparison of methods from One-Shot Neural Architecture Search: Maximising Diversity to Overcome Catastrophic Forgetting
+                        mean_losses = torch.tensor(0.0).cuda(args.gpu)
+                        cur_code = ss.encode(sample_config)
+                        if len(arch_pool.pool) == arch_pool.pool_size:   
+                            total_loss = 0.0
+                            # pool branches
+                            with torch.no_grad():
+                                for arch_code in arch_pool.pool:
+                                    model_module.backbone.backbone.set_sample_config(sample_config=ss.decode(arch_code))
+                                    p_losses = model(**batched, mode='loss')
+                                    p_loss, _ = model_module.parse_losses(p_losses)
+                                    total_loss += p_loss
+                                    # print(f"  ├─ pool_arch[{arch_code}] 的 loss = {p_loss.item():.4f}")
+                            mean_losses = total_loss / len(arch_pool.pool)
+                        arch_pool.add_architecture(cur_code)
+                        loss = 0.8 * loss + 0.2 * mean_losses
 
-                loss = loss / args.dynamic_batch_size
+                    loss = loss / args.dynamic_batch_size
+
+                if args.amp:
+                    scaler.scale(loss).backward()
+                else:    
+                    loss.backward()
+
+            if args.max_norm > 0:
+                if args.amp:
+                    scaler.unscale_(optimizer)
+                grad_norm = nn.utils.clip_grad_norm_(model.parameters(), args.max_norm)
+                # print(f'grad norm: {grad_norm:.2f}')
 
             if args.amp:
-                scaler.scale(loss).backward()
-            else:    
-                loss.backward()
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                optimizer.step()
 
-        if args.max_norm > 0:
-            if args.amp:
-                scaler.unscale_(optimizer)
-            grad_norm = nn.utils.clip_grad_norm_(model.parameters(), args.max_norm)
-            # print(f'grad norm: {grad_norm:.2f}')
+            scheduler.step()
+            current_lr = optimizer.param_groups[0]['lr']
+            current_lr_kd = optimizer.param_groups[1]['lr'] if args.f_distill else 0
 
-        if args.amp:
-            scaler.step(optimizer)
-            scaler.update()
-        else:
-            optimizer.step()
+            # show log and save result
+            if global_step % 100 == 0:
+                if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
+                    logger.info('[epoch][s/s_per_e/gs]: [{}][{}/{}/{}], lr: {:.10f}, total_loss: {:.6f}, kd_loss: {:.6f}, spat_loss: {:.6f}, freq_loss: {:.6f}'.format(epoch, step, steps_per_epoch, global_step, current_lr, loss.item(), args.kd_ratio * kd_loss.item(), spat_loss.item(), freq_loss.item()))
+                    if np.isnan(loss.cpu().item()):
+                        logger.info('NaN in loss occurred. Aborting training.')
+                        return -1
 
-        scheduler.step()
-        current_lr = optimizer.param_groups[0]['lr']
-        current_lr_kd = optimizer.param_groups[-1]['lr'] if args.f_distill else 0
+            duration += time.time() - before_op_time
+            if global_step and global_step % args.log_freq == 0:
+                var_sum = [var.sum().item() for var in model.parameters() if var.requires_grad]
+                var_cnt = len(var_sum)
+                var_sum = np.sum(var_sum)
+                examples_per_sec = cfg.train_dataloader.batch_size / duration * args.log_freq
+                duration = 0
+                time_sofar = (time.time() - start_time) / 3600
+                training_time_left = (num_total_steps / global_step - 1.0) * time_sofar
 
-        # show log and save result
-        if global_step % 100 == 0:
-            if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
-                logger.info('Iter [{}/{}], lr: {:.10f}, total_loss: {:.6f}, kd_loss: {:.6f}, spat_loss: {:.6f}, freq_loss: {:.6f}'.format(
-                    global_step, args.total_iters, current_lr, loss.item(), args.kd_ratio * kd_loss.item(), spat_loss.item(), freq_loss.item()))
-                if np.isnan(loss.cpu().item()):
-                    logger.info('NaN in loss occurred. Aborting training.')
-                    return -1
+                print_string = 'GPU: {} | examples/s: {:4.2f} | loss: {:.5f} | var sum: {:.3f} avg: {:.3f} | time elapsed: {:.2f}h | time left: {:.2f}h'
+                logger.info(print_string.format(args.gpu, examples_per_sec, loss.item(), var_sum.item(), var_sum.item()/var_cnt, time_sofar, training_time_left))
 
-        duration += time.time() - before_op_time
-        if global_step and global_step % args.log_freq == 0:
-            var_sum = [var.sum().item() for var in model.parameters() if var.requires_grad]
-            var_cnt = len(var_sum)
-            var_sum = np.sum(var_sum)
-            examples_per_sec = cfg.train_dataloader.batch_size / duration * args.log_freq
-            duration = 0
-            time_sofar = (time.time() - start_time) / 3600
-            training_time_left = (args.total_iters / global_step - 1.0) * time_sofar
+                if not args.multiprocessing_distributed or (args.multiprocessing_distributed
+                                                            and args.rank % ngpus_per_node == 0):
+                    writer.add_scalar('train_loss', loss.item(), global_step)
+                    writer.add_scalar('learning_rate', current_lr, global_step)
+                    writer.add_scalar('learning_rate_kd', current_lr_kd, global_step)
+                    writer.add_scalar('var_average', var_sum.item()/var_cnt, global_step)
 
-            print_string = 'GPU: {} | examples/s: {:4.2f} | loss: {:.5f} | var sum: {:.3f} avg: {:.3f} | time elapsed: {:.2f}h | time left: {:.2f}h'
-            logger.info(print_string.format(args.gpu, examples_per_sec, loss.item(), var_sum.item(), var_sum.item()/var_cnt, time_sofar, training_time_left))
 
-            if not args.multiprocessing_distributed or (args.multiprocessing_distributed
-                                                        and args.rank % ngpus_per_node == 0):
-                writer.add_scalar('train_loss', loss.item(), global_step)
-                writer.add_scalar('learning_rate', current_lr, global_step)
-                writer.add_scalar('learning_rate_kd', current_lr_kd, global_step)
-                writer.add_scalar('var_average', var_sum.item()/var_cnt, global_step)
-
-        if args.do_online_eval and global_step > 0 and global_step % args.eval_interval == 0:
+        if args.do_online_eval and (epoch % 1 == 0 or epoch == args.num_epochs - 1):
             barrier()
             time.sleep(0.1)
             metrics_dict = online_eval(args, model, dataloader_eval, evaluator=evaluator, logger=logger, ss=ss)
@@ -501,6 +536,8 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
             model.train()
             block_print()
             enable_print()
+
+        epoch += 1
        
     if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
         writer.close()

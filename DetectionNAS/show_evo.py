@@ -6,7 +6,7 @@ import matplotlib.animation as animation
 GIF = False
 HV = False
 
-target_dir = '/data/code_yzh/DistillNAS/runs/coco/01_search/run_search_3'
+target_dir = '/data/code_yzh/DistillNAS/runs/coco/01_search/run_search_4_full_dataset'
 # Ensure output directory exists
 output_dir = os.path.join(target_dir, 'show_evo_pics/')
 os.makedirs(output_dir, exist_ok=True)
@@ -18,7 +18,7 @@ max_gen = df['gen'].max()
 # max_gen = 100
 
 # Define generations to plot (e.g., every 5 generations from 1 to 50)
-gen_steps = list(range(15, max_gen + 1, 14))
+gen_steps = list(range(1, max_gen + 1, 1))
 if gen_steps[-1] != max_gen:
     gen_steps.append(max_gen)
 

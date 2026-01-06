@@ -1,9 +1,8 @@
 _base_ = [
-    '../_base_/default_runtime.py', '../_base_/datasets/cityscapes.py'
+    '../_base_/default_runtime.py', '../_base_/datasets/ade20k_640x640.py'
 ]
 
-# crop_size = (896, 896)
-crop_size = (518, 1036)
+crop_size = (896, 896)
 data_preprocessor = dict(
     type='SegDataPreProcessor',
     mean=[123.675, 116.28, 103.53],
@@ -12,7 +11,7 @@ data_preprocessor = dict(
     pad_val=0,
     seg_pad_val=255,
     size=crop_size)
-num_classes = 19
+num_classes = 150
 
 model = dict(
     type='EncoderDecoder',
@@ -130,94 +129,102 @@ model = dict(
                 ]),
             sampler=dict(type='mmdet.MaskPseudoSampler'))),
     train_cfg=dict(),
-    test_cfg=dict(mode='slide', crop_size=crop_size, stride=(518, 518)))
+    test_cfg=dict(mode='slide', crop_size=crop_size, stride=(426, 426)))
 
-# # dataset config
-# train_pipeline = [
-#     dict(type='LoadImageFromFile'),
-#     dict(type='LoadAnnotations'),
-#     dict(
-#         type='RandomChoiceResize',
-#         scales=[int(x * 0.1 * 896) for x in range(5, 21)],
-#         resize_type='ResizeShortestEdge',
-#         max_size=896 * 4),
-#     dict(type='RandomCrop', crop_size=crop_size, cat_max_ratio=0.75),
-#     dict(type='RandomFlip', prob=0.5),
-#     dict(type='PhotoMetricDistortion'),
-#     dict(type='PackSegInputs')
-# ]
-# test_pipeline = [
-#     dict(type='LoadImageFromFile'),
-#     dict(type='Resize', scale=(896 * 4, 896), keep_ratio=True),
-#     # add loading annotation after ``Resize`` because ground truth
-#     # does not need to do resize data transform
-#     dict(type='LoadAnnotations'),
-#     dict(type='PackSegInputs')
-# ]
-# train_dataloader = dict(batch_size=1, dataset=dict(pipeline=train_pipeline))
-# val_dataloader = dict(dataset=dict(pipeline=test_pipeline))
-# test_dataloader = val_dataloader
+# dataset config
+train_pipeline = [
+    dict(type='LoadImageFromFile'),
+    dict(type='LoadAnnotations', reduce_zero_label=True),
+    dict(
+        type='RandomChoiceResize',
+        scales=[int(x * 0.1 * 896) for x in range(5, 21)],
+        resize_type='ResizeShortestEdge',
+        max_size=3584),
+    dict(type='RandomCrop', crop_size=crop_size, cat_max_ratio=0.75),
+    dict(type='RandomFlip', prob=0.5),
+    dict(type='PhotoMetricDistortion'),
+    dict(type='PackSegInputs')
+]
+test_pipeline = [
+    dict(type='LoadImageFromFile'),
+    dict(type='Resize', scale=(3584, 896), keep_ratio=True),
+    # add loading annotation after ``Resize`` because ground truth
+    # does not need to do resize data transform
+    dict(type='LoadAnnotations', reduce_zero_label=True),
+    dict(type='PackSegInputs')
+]
+train_dataloader = dict(batch_size=1, dataset=dict(pipeline=train_pipeline))
+val_dataloader = dict(dataset=dict(pipeline=test_pipeline))
+test_dataloader = val_dataloader
 
-# # set all layers in backbone to lr_mult=0.1
-# # set all norm layers, position_embeding,
-# # query_embeding, level_embeding to decay_multi=0.0
-# backbone_norm_multi = dict(lr_mult=0.1, decay_mult=0.0)
-# backbone_embed_multi = dict(lr_mult=0.1, decay_mult=0.0)
-# embed_multi = dict(lr_mult=1.0, decay_mult=0.0)
-# custom_keys = {
-#     'backbone.dinov2': dict(lr_mult=0.1, decay_mult=1.0),
-#     'backbone.dinov2.norm': backbone_norm_multi,
-#     'pos_embed': backbone_embed_multi,
-#     'query_embed': embed_multi,
-#     'query_feat': embed_multi,
-#     'level_embed': embed_multi
-# }
-# custom_keys.update({
-#     f'backbone.dinov2.blocks.{block_id}.norm': backbone_norm_multi
-#     for block_id in range(24)
-# })
-# # optimizer
-# optimizer = dict(
-#     type='AdamW', lr=0.00003, weight_decay=0.05, eps=1e-8, betas=(0.9, 0.999))
 # optim_wrapper = dict(
+#     _delete_=True,
 #     type='OptimWrapper',
-#     optimizer=optimizer,
-#     clip_grad=dict(max_norm=0.01, norm_type=2),
-#     paramwise_cfg=dict(custom_keys=custom_keys, norm_decay_mult=0.0))
+#     optimizer=dict(
+#         type='AdamW', lr=3e-5, betas=(0.9, 0.999), weight_decay=0.05),
+#     constructor='LayerDecayOptimizerConstructor',
+#     paramwise_cfg=dict(num_layers=12, layer_decay_rate=0.9))
 
-# find_unused_parameters=True
+# set all layers in backbone to lr_mult=0.1
+# set all norm layers, position_embeding,
+# query_embeding, level_embeding to decay_multi=0.0
+backbone_norm_multi = dict(lr_mult=0.1, decay_mult=0.0)
+backbone_embed_multi = dict(lr_mult=0.1, decay_mult=0.0)
+embed_multi = dict(lr_mult=1.0, decay_mult=0.0)
+custom_keys = {
+    'backbone.dinov2': dict(lr_mult=0.1, decay_mult=1.0),
+    'backbone.dinov2.norm': backbone_norm_multi,
+    'pos_embed': backbone_embed_multi,
+    'query_embed': embed_multi,
+    'query_feat': embed_multi,
+    'level_embed': embed_multi
+}
+custom_keys.update({
+    f'backbone.dinov2.blocks.{block_id}.norm': backbone_norm_multi
+    for block_id in range(24)
+})
+# optimizer
+optimizer = dict(
+    type='AdamW', lr=0.00003, weight_decay=0.05, eps=1e-8, betas=(0.9, 0.999))
+optim_wrapper = dict(
+    type='OptimWrapper',
+    optimizer=optimizer,
+    clip_grad=dict(max_norm=0.01, norm_type=2),
+    paramwise_cfg=dict(custom_keys=custom_keys, norm_decay_mult=0.0))
 
-# param_scheduler = [
-#     dict(
-#         type='LinearLR', start_factor=1e-6, by_epoch=False, begin=0, end=1500),
-#     dict(
-#         type='PolyLR',
-#         power=1.0,
-#         begin=1500,
-#         end=80000,
-#         eta_min=0.0,
-#         by_epoch=False,
-#     )
-# ]
+find_unused_parameters=True
 
-# # training schedule for 160k
-# train_cfg = dict(
-#     type='IterBasedTrainLoop', max_iters=80000, val_interval=5000)
-# val_cfg = dict(type='ValLoop')
-# test_cfg = dict(type='TestLoop')
-# default_hooks = dict(
-#     timer=dict(type='IterTimerHook'),
-#     logger=dict(type='LoggerHook', interval=50, log_metric_by_epoch=False),
-#     param_scheduler=dict(type='ParamSchedulerHook'),
-#     checkpoint=dict(
-#         type='CheckpointHook', by_epoch=False, interval=5000, save_best='mIoU', max_keep_ckpts=1),
-#     sampler_seed=dict(type='DistSamplerSeedHook'),
-#     visualization=dict(type='SegVisualizationHook'))
+param_scheduler = [
+    dict(
+        type='LinearLR', start_factor=1e-6, by_epoch=False, begin=0, end=1500),
+    dict(
+        type='PolyLR',
+        power=1.0,
+        begin=1500,
+        end=160000,
+        eta_min=0.0,
+        by_epoch=False,
+    )
+]
 
-# # Default setting for scaling LR automatically
-# #   - `enable` means enable scaling LR automatically
-# #       or not by default.
-# #   - `base_batch_size` = (8 GPUs) x (2 samples per GPU).
-# auto_scale_lr = dict(enable=False, base_batch_size=16)
+# training schedule for 160k
+train_cfg = dict(
+    type='IterBasedTrainLoop', max_iters=160000, val_interval=5000)
+val_cfg = dict(type='ValLoop')
+test_cfg = dict(type='TestLoop')
+default_hooks = dict(
+    timer=dict(type='IterTimerHook'),
+    logger=dict(type='LoggerHook', interval=50, log_metric_by_epoch=False),
+    param_scheduler=dict(type='ParamSchedulerHook'),
+    checkpoint=dict(
+        type='CheckpointHook', by_epoch=False, interval=5000, save_best='mIoU', max_keep_ckpts=1),
+    sampler_seed=dict(type='DistSamplerSeedHook'),
+    visualization=dict(type='SegVisualizationHook'))
 
-# work_dir = './work_dirs/depth_anything_large_mask2former_16xb1_80k_cityscapes_896x896'
+# Default setting for scaling LR automatically
+#   - `enable` means enable scaling LR automatically
+#       or not by default.
+#   - `base_batch_size` = (8 GPUs) x (2 samples per GPU).
+auto_scale_lr = dict(enable=False, base_batch_size=16)
+
+work_dir = './work_dirs/depth_anything_large_mask2former_16xb1_160k_ade20k_896x896'

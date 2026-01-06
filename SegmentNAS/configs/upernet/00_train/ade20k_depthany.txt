@@ -1,0 +1,17 @@
+SegmentNAS/configs/depthanything/depth_anything_large_mask2former_16xb1_160k_ade20k_896x896.py
+--model_name mambasegment
+--optimizer adamw
+--num_epochs 1
+--learning_rate 6e-5
+--weight_decay 0.01
+--max_norm -1
+--log_directory ./runs/ade20k/run_debug/
+--multiprocessing_distributed
+--dist_url tcp://127.0.0.1:2368
+--devices 0,1,2,3
+
+--log_freq 1000
+--do_online_eval
+
+--dynamic_batch_size 1
+--kd_ratio 0.0

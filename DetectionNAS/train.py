@@ -116,10 +116,6 @@ def parse_args():
 @torch.no_grad()
 def online_eval(args, model, dataloader_eval, evaluator=None, logger=None, ss=None):
     model.eval()
-    # 显存有限时，防止OOM
-    torch.cuda.synchronize()
-    gc.collect()
-    torch.cuda.empty_cache()
 
     for _, eval_sample_batched in enumerate(tqdm(dataloader_eval)):
         # random sample subnet
@@ -132,11 +128,6 @@ def online_eval(args, model, dataloader_eval, evaluator=None, logger=None, ss=No
 
     metrics_dict = evaluator.evaluate(len(dataloader_eval.dataset))
     logger.info(metrics_dict)
-
-    # eval 完再清一次，避免回到 train 还残留
-    torch.cuda.synchronize()
-    gc.collect()
-    torch.cuda.empty_cache()
 
     return metrics_dict
 

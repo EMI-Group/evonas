@@ -5,7 +5,7 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 
 import random
-import os, sys, time
+import os, sys, time, gc
 # os.environ["CUDA_VISIBLE_DEVICES"]="4,5,6,7"  # to set in config file
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, PROJECT_ROOT)
@@ -20,27 +20,31 @@ from tensorboardX import SummaryWriter
 
 from utils import barrier, block_print, enable_print, build_optimizer, \
                        convert_arg_line_to_args, get_root_logger, unwrap_model, str2list
-from SegmentNAS.networks import model
+from DetectionNAS.networks import model
 from search_space import MambaSearchSpace
 from torch.amp import autocast, GradScaler
 
 from supernet_pool import ArchitecturePool
-from utils import build_iter_lambda_scheduler, build_iter_poly_scheduler, pad_to_multiple
-from SegmentNAS.networks.depth_anything import dinov2
-from mmengine.registry import MODELS 
+from utils import build_iter_lambda_scheduler
+from mmdet.registry import MODELS, METRICS  
 from mmengine.evaluator import Evaluator
+from torch.utils.data import DataLoader
+from contextlib import nullcontext
+
+from mmengine.registry import init_default_scope
+init_default_scope('mmdet')
 from mmengine.runner import Runner, load_checkpoint
 from mmengine.runner.amp import autocast as mautocast
-from mmseg.utils import register_all_modules
+from mmdet.utils import register_all_modules
 register_all_modules(init_default_scope=True)
 
-'''fine-tune supernet on object dataset, e.g. Cityscapes'''
+'''fine-tune supernet on object dataset, e.g. COCO'''
 
 ### develop
-# python SegmentNAS/train.py SegmentNAS/configs/upernet/00_train/cityscapes_nas.txt
+# python DetectionNAS/train.py DetectionNAS/configs/coco_nas_kd.txt 
 
 ### final
-# sh scripts/segment/supernet_steptrain.sh
+# sh scripts/detection/supernet_steptrain.sh
 
 def parse_args():
     parser = argparse.ArgumentParser(description='MambaDetection PyTorch implementation.', fromfile_prefix_chars='@')
@@ -49,13 +53,14 @@ def parse_args():
     parser.add_argument('config',              help='train config file path')
     parser.add_argument('teacher_config', nargs='?', default=None, help='teacher config file path (optional)')
     parser.add_argument('--model_name',                type=str,   help='model name', default='MambaDepth')
+    parser.add_argument('--encoder',                   type=str,   help='type of encoder, base07, large07', default='SuperNet')
     parser.add_argument('--pretrain',                  type=str,   help='path of pretrained encoder', default=None)
     parser.add_argument('--devices',                    type=str, default='0,1', help='CUDA_VISIBLE_DEVICES value, e.g., "0" or "0,1"')
 
     # Search space
     parser.add_argument('--mlp_ratio',                 type=str2list, default=[4.0])
     parser.add_argument('--d_state',                   type=str2list, default=[64])
-    parser.add_argument('--ssd_expand',                type=str2list, default=[4])
+    parser.add_argument('--ssd_expand',                type=str2list, default=[2])
     parser.add_argument('--open_depth',                action='store_true', help='if set, will open depth sampling, otherwise use fixed depth for all stages')
     parser.add_argument('--min_ones',                  type=int,    help='minimum number of active layers in each stage during sampling', default=1)
     parser.add_argument('--width_multiplier',          type=float, help='factor to scale the number of channels in each layer (applies only to final model)', default=1.0)
@@ -75,11 +80,10 @@ def parse_args():
     parser.add_argument('--optimizer',                 type=str,   help='optimizer to use', default='adamw')
     parser.add_argument('--learning_rate',             type=float, help='initial learning rate', default=1e-4)
     parser.add_argument('--weight_decay',              type=float, help='weight decay for optimizer', default=0.05)
-    parser.add_argument('--total_iters',               type=int,   help='number of iters for training', default=160000)
+    parser.add_argument('--num_epochs',                type=int,   help='number of epochs', default=50)
     parser.add_argument('--dynamic_batch_size',        type=int,   help='the number of dynamic batch size', default=1)
     parser.add_argument('--max_norm',                  type=float, help='maximum norm for gradient clipping, (grad clip is not used if -1 or 0)', default=-1)
     parser.add_argument('--amp',                                   help='enable mixed precision (AMP)', action='store_true')
-    parser.add_argument('--eval_interval',                  type=int,   help='evaluation frequency', default=16000)
 
     # Multi-gpu training
     parser.add_argument('--world_size',                type=int,   help='number of nodes for distributed training', default=1)
@@ -95,7 +99,10 @@ def parse_args():
     parser.add_argument('--do_online_eval',                        help='if set, perform online eval in every eval_freq steps', action='store_true')
     parser.add_argument('--eval_summary_directory',    type=str,   help='output directory for eval summary,'
                                                                         'if empty outputs to checkpoint folder', default='')
-
+    # experimental
+    parser.add_argument('--arch_pool', action='store_true', help='if set, will train arch pool of subnet during training')
+    parser.add_argument('--accum_steps', type=int, default=1,
+                    help='gradient accumulation steps across different batches')
 
     if sys.argv.__len__() == 2:
         arg_filename_with_prefix = '@' + sys.argv[1]
@@ -109,17 +116,27 @@ def parse_args():
 @torch.no_grad()
 def online_eval(args, model, dataloader_eval, evaluator=None, logger=None, ss=None):
     model.eval()
-    for id, eval_sample_batched in enumerate(tqdm(dataloader_eval)):
+    # 显存有限时，防止OOM
+    torch.cuda.synchronize()
+    gc.collect()
+    torch.cuda.empty_cache()
+
+    for _, eval_sample_batched in enumerate(tqdm(dataloader_eval)):
         # random sample subnet
         sample_config = ss.sample(n_samples=1)[0]
         model_module = unwrap_model(model)
-        model_module.backbone.backbone.set_sample_config(sample_config=sample_config)
+        model_module.backbone.backbone.set_sample_config(sample_config=sample_config)  # TODO
         with mautocast(enabled=args.amp):
             preds = model_module.val_step(eval_sample_batched)
         evaluator.process(data_samples=preds, data_batch=eval_sample_batched)
 
     metrics_dict = evaluator.evaluate(len(dataloader_eval.dataset))
     logger.info(metrics_dict)
+
+    # eval 完再清一次，避免回到 train 还残留
+    torch.cuda.synchronize()
+    gc.collect()
+    torch.cuda.empty_cache()
 
     return metrics_dict
 
@@ -143,30 +160,27 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
     if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
         logger.info('args: '+str(args))
 
+    # model = MambaDepth(args, version=args.encoder, inv_depth=False, max_depth=args.max_depth, pretrained=args.pretrain, remap=args.remap)
     model = MODELS.build(cfg.model)
     model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
     model.init_weights()
     model.train()
     
-    # load_checkpoint(model, './checkpoints/mask2former_swin-l-in22k-384x384-pre_8xb2-90k_cityscapes-512x1024_20221202_141901-28ad20f1.pth', map_location='cpu')
+    # load_checkpoint(model, './checkpoints/mask_rcnn_swin-s-p4-w7_fpn_fp16_ms-crop-3x_coco_20210903_104808-b92c91f1.pth', map_location='cpu')
 
     ### teacher model
     if args.kd_ratio > 0 or args.f_distill:
         t_cfg = Config.fromfile(args.teacher_config)
         teacher_model = MODELS.build(t_cfg.model)
-        load_checkpoint(teacher_model, './checkpoints/cityscapes_vitl_mIoU_86.4.pth', map_location='cpu', strict=True)
-        # load_checkpoint(teacher_model, './checkpoints/upernet_r101_512x1024_80k_cityscapes_20200607_002403-f05f2345.pth', map_location='cpu')
-        # load_checkpoint(teacher_model, './checkpoints/mask2former_swin-l-in22k-384x384-pre_8xb2-90k_cityscapes-512x1024_20221202_141901-28ad20f1.pth', map_location='cpu', strict=True)
+        load_checkpoint(teacher_model, './checkpoints/cascade_mask_rcnn_convnext-s_p4_w7_fpn_giou_4conv1f_fp16_ms-crop_3x_coco_20220510_201004-3d24f5a4.pth', map_location='cpu', strict=True)
         logger.info("Successed loading weights for teacher model")
     
     from distillation.fmdv2 import FreqMaskingDistillLossv2
     dis_modules_s4 = FreqMaskingDistillLossv2(
         alpha=[args.alpha_1, args.alpha_2],
         student_dims=512, # student feature dimension
-        teacher_dims=1024,  # teacher feature dimension   e.g. 1024 for DA; 2048 for upernet-r101; 1536 for mask2former_swin-l
-        query_hw=(37,74),  # shape of tearcher feature   e.g.(37,74) for DA; (16,32) for mask2former_swin-l
-        pos_hw=(16, 32),  # shape of student feature 
-        pos_dims=1024,  # same to teacher_dims
+        teacher_dims=768,  # teacher feature dimension
+        pos_dims=768,  # same to teacher_dims
         self_query=True,
         softmax_scale=[5.,5.],
         num_heads=16
@@ -189,8 +203,9 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
 
         parts = {
             "backbone": getattr(model, "backbone", None),
-            "decode_head": getattr(model, "decode_head", None),
-            "auxiliary_head": getattr(model, "auxiliary_head", None),
+            "neck": getattr(model, "neck", None),
+            "rpn_head": getattr(model, "rpn_head", None),
+            "roi_head": getattr(model, "roi_head", None),
         }
 
         used = set()
@@ -250,12 +265,7 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
     evaluator.dataset_meta = dataset_meta
 
     model_module = unwrap_model(model)
-    # for m in model_module.backbone.backbone.modules():
-    #     if isinstance(m, nn.BatchNorm2d):
-    #         m.eval()  # 切换到 eval 模式 -> 不再更新统计
-    #         m.weight.requires_grad = False  # 不更新 γ
-    #         m.bias.requires_grad = False    # 不更新 β:
-            
+
     for m in model_module.modules():
         if isinstance(m, nn.ReLU):  # TODO
             m.inplace = False
@@ -268,7 +278,7 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
 
     ss = MambaSearchSpace(args.mlp_ratio, args.d_state, args.ssd_expand, open_depth=args.open_depth)
 
-    # metrics_dict = online_eval(args, model, dataloader_eval, evaluator=evaluator, logger=logger, ss=ss)
+    # metrics_dict = online_eval(args, teacher_model, dataloader_eval, evaluator=evaluator, logger=logger, ss=ss)
     # assert False,'test'
 
     # Logging
@@ -281,9 +291,8 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
                 eval_summary_path = os.path.join(args.log_directory, args.model_name, 'eval')
             eval_summary_writer = SummaryWriter(eval_summary_path, flush_secs=30)
 
-    global_step = 0  
-    last_epoch = -1
-    key_metrics = ['mIoU']
+    global_step = -1
+    key_metrics = ['coco/bbox_mAP', 'coco/segm_mAP']
     best_vals = {k: float('-inf') for k in key_metrics}
     best_steps = {k: -1 for k in key_metrics}
 
@@ -296,17 +305,35 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
 
     if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
         logger.info("== Initial variables' sum: {:.3f}, avg: {:.3f}".format(var_sum, var_sum/var_cnt))
-        logger.info("== Total training steps: {}".format(args.total_iters))
 
-    scheduler = build_iter_poly_scheduler(
+    steps_per_epoch = len(dataloader)
+    num_total_steps = args.num_epochs * steps_per_epoch
+    epoch = 0  # need equal to global_step // steps_per_epoch if resume
+
+    if args.num_epochs==36:
+        milestones = (24, 33)
+    elif args.num_epochs==12:
+        milestones = (8, 11)
+    elif args.num_epochs==8:
+        milestones = (5, 7)
+    else:
+        milestones = (max(1, int(args.num_epochs*0.67)),)
+    scheduler = build_iter_lambda_scheduler(
         optimizer,
-        warmup_iters=1500 if args.total_iters > 30000 else int(0.05 * args.total_iters),
-        total_iters=args.total_iters,
-        start_factor=1e-6,
-        power=1.0
+        warmup_iters=1000,
+        warmup_ratio=0.001,
+        milestones=milestones,
+        iters_per_epoch=steps_per_epoch,
+        gamma=0.1
     )
+    # from torch.optim.lr_scheduler import MultiStepLR
+    # scheduler = MultiStepLR(
+    #     optimizer,
+    #     milestones=[8, 11],
+    #     gamma=0.1
+    # )
 
-    # with open('./segment_model_depthanything.log', 'w') as f:
+    # with open('./detection_model_nas.log', 'w') as f:
     #     f.write(str(model))
     # assert False,'debug'
 
@@ -316,133 +343,194 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
     def hook_fn_T(module, input, output):
         features['feat_T_s4'] = output[3]
 
-    ################### train loop ########################
-    model.train()
+    if args.arch_pool:
+        arch_pool = ArchitecturePool(pool_size=3)
 
-    train_loader_iter = iter(dataloader)
-    iters_per_epoch = len(dataloader)
-
-    while global_step < args.total_iters:
-
-        global_step += 1
-        current_epoch = (global_step - 1) // iters_per_epoch
-        if current_epoch != last_epoch:
-            dataloader.sampler.set_epoch(current_epoch)
-            # 固定随机种子，为了保证每个iter采样架构一致
-            random.seed(current_epoch)
-            np.random.seed(current_epoch)
-            last_epoch = current_epoch
     
-        optimizer.zero_grad()
-        before_op_time = time.time()
+    # 辅助函数：将重复的蒸馏 Loss 计算提取出来
+    def calc_distill_loss_and_return_components(args, loss, feat_T_s4, features, global_step, num_total_steps):
+        spat_loss = torch.tensor(0.0).to(loss.device)
+        freq_loss = torch.tensor(0.0).to(loss.device)
+        kd_loss = torch.tensor(0.0).to(loss.device)
 
-        try:
-            sample_batched = next(train_loader_iter)
-        except StopIteration:
-            train_loader_iter = iter(dataloader)
-            sample_batched = next(train_loader_iter)
-
-        model_module = unwrap_model(model)
-        batched = model_module.data_preprocessor(sample_batched, True)
-
-        if args.kd_ratio > 0 or args.f_distill:
-            with torch.no_grad():
-                teacher_model.eval()
-                with autocast(device_type='cuda', dtype=torch.float16, enabled=args.amp):
-                    t_module = unwrap_model(teacher_model)
-                    handle_T = t_module.backbone.register_forward_hook(hook_fn_T)
-                    # fix_inputs, ph, pw = pad_to_multiple(batched['inputs'], n=14, pad_value=0.0)  # for DA
-                    # _ = t_module.extract_feat(fix_inputs)
-                    _ = t_module.extract_feat(batched['inputs'])
-
-                if args.f_distill:
-                    feat_T_s4 = features.pop('feat_T_s4')            
-
-        for _ in range(args.dynamic_batch_size):
-            with autocast(device_type='cuda', dtype=torch.float16, enabled=args.amp):
-                # random sample subnet
-                sample_config = ss.sample(n_samples=1)[0]
-                model_module.backbone.backbone.set_sample_config(sample_config=sample_config)
-                if args.f_distill:
-                    handle_S = model_module.backbone.register_forward_hook(hook_fn_S)
-
-                if isinstance(batched, dict):
-                    losses = model(**batched, mode='loss')
-                elif isinstance(batched, (list, tuple)):
-                    losses = model(*batched, mode='loss')
-                else:
-                    raise TypeError(f'Output of data_preprocessor must be dict/tuple/list, got {type(batched)}')
-
-                loss, log_vars = model_module.parse_losses(losses)
+        # 特征蒸馏
+        if args.f_distill and feat_T_s4 is not None:
+            feat_S_s4 = features.pop('feat_S_s4')
+            spat_loss, freq_loss = dis_modules_s4(feat_S_s4, feat_T_s4)
             
-                ### teacher model
-                spat_loss = torch.tensor(0.0).cuda(args.gpu)
-                freq_loss = torch.tensor(0.0).cuda(args.gpu)
-                kd_loss = torch.tensor(0.0).cuda(args.gpu)
-
-                if args.f_distill:
-                    feat_S_s4 = features.pop('feat_S_s4')
-                    spat_loss, freq_loss = dis_modules_s4(feat_S_s4, feat_T_s4)
-
-                    handle_T.remove()
-                    handle_S.remove()
-
-                if args.kd_ratio > 0 or args.f_distill:
-                    loss = (1 - args.kd_ratio) * loss + args.kd_ratio * kd_loss + spat_loss + freq_loss
-
-                loss = loss / args.dynamic_batch_size
-
-            if args.amp:
-                scaler.scale(loss).backward()
-            else:    
-                loss.backward()
-
-        if args.max_norm > 0:
-            if args.amp:
-                scaler.unscale_(optimizer)
-            grad_norm = nn.utils.clip_grad_norm_(model.parameters(), args.max_norm)
-            # print(f'grad norm: {grad_norm:.2f}')
-
-        if args.amp:
-            scaler.step(optimizer)
-            scaler.update()
+            warmup = min(1.0, global_step / (0.05 * num_total_steps))
+            w_ratio = warmup * (0.2 + 0.8 * (1 - global_step / num_total_steps))
+            spat_loss = w_ratio * spat_loss
+            freq_loss = w_ratio * freq_loss
+        
+        # 总 Loss 计算
+        if args.kd_ratio > 0 or args.f_distill:
+            total_loss = (1 - args.kd_ratio) * loss + args.kd_ratio * kd_loss + spat_loss + freq_loss
         else:
-            optimizer.step()
+            total_loss = loss
+            
+        return total_loss, spat_loss, freq_loss
 
-        scheduler.step()
-        current_lr = optimizer.param_groups[0]['lr']
-        current_lr_kd = optimizer.param_groups[-1]['lr'] if args.f_distill else 0
+    ################### train loop (Sandwich Rule Modified) ########################
+    model.train()
+    # 定义三明治法则的采样策略：Max + Min + 2个Random
+    n_random_subnets = 2
+    total_subnets_per_step = 1 + n_random_subnets
+    max_config = {'mlp_ratio': [4.0,4.0,4.0,4.0], 'd_state': [64,64,64,64], 'expand': [4,4,4,4], 'depth': [[1,1],[1,1,1,1],[1,1,1,1,1,1,1,1],[1,1,1,1]]}
 
-        # show log and save result
-        if global_step % 100 == 0:
-            if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
-                logger.info('Iter [{}/{}], lr: {:.10f}, total_loss: {:.6f}, kd_loss: {:.6f}, spat_loss: {:.6f}, freq_loss: {:.6f}'.format(
-                    global_step, args.total_iters, current_lr, loss.item(), args.kd_ratio * kd_loss.item(), spat_loss.item(), freq_loss.item()))
-                if np.isnan(loss.cpu().item()):
-                    logger.info('NaN in loss occurred. Aborting training.')
-                    return -1
+    while epoch < args.num_epochs:
+        if args.distributed:
+            dataloader.batch_sampler.sampler.set_epoch(epoch)
+        
+        random.seed(epoch)
+        np.random.seed(epoch)
 
-        duration += time.time() - before_op_time
-        if global_step and global_step % args.log_freq == 0:
-            var_sum = [var.sum().item() for var in model.parameters() if var.requires_grad]
-            var_cnt = len(var_sum)
-            var_sum = np.sum(var_sum)
-            examples_per_sec = cfg.train_dataloader.batch_size / duration * args.log_freq
-            duration = 0
-            time_sofar = (time.time() - start_time) / 3600
-            training_time_left = (args.total_iters / global_step - 1.0) * time_sofar
+        optimizer.zero_grad()
 
-            print_string = 'GPU: {} | examples/s: {:4.2f} | loss: {:.5f} | var sum: {:.3f} avg: {:.3f} | time elapsed: {:.2f}h | time left: {:.2f}h'
-            logger.info(print_string.format(args.gpu, examples_per_sec, loss.item(), var_sum.item(), var_sum.item()/var_cnt, time_sofar, training_time_left))
+        for step, sample_batched in enumerate(dataloader):
+            before_op_time = time.time()
+            global_step += 1
 
-            if not args.multiprocessing_distributed or (args.multiprocessing_distributed
-                                                        and args.rank % ngpus_per_node == 0):
-                writer.add_scalar('train_loss', loss.item(), global_step)
-                writer.add_scalar('learning_rate', current_lr, global_step)
-                writer.add_scalar('learning_rate_kd', current_lr_kd, global_step)
-                writer.add_scalar('var_average', var_sum.item()/var_cnt, global_step)
+            log_avg_loss = 0.0
+            log_spat_loss = 0.0
+            log_freq_loss = 0.0
 
-        if args.do_online_eval and global_step > 0 and global_step % args.eval_interval == 0:
+            feat_T_s4 = None
+            if args.kd_ratio > 0 or args.f_distill:
+                with torch.no_grad():
+                    teacher_model.eval()
+                    with autocast(device_type='cuda', dtype=torch.float16, enabled=args.amp):
+                        model_module = unwrap_model(teacher_model)
+                        handle_T = model_module.backbone.register_forward_hook(hook_fn_T)
+                        # tearcher_preds = model_module.val_step(sample_batched)
+                        batched = model_module.data_preprocessor(sample_batched, False)
+                        model_module.extract_feat(batched["inputs"])  # 输出的是FPN之后的结果
+                    if args.f_distill:
+                        feat_T_s4 = features.pop('feat_T_s4')
+                        handle_T.remove()
+
+            my_context = model.no_sync() if args.distributed else nullcontext()
+
+            # Sandwich Rule Step 1: 训练 Max Subnet (The Top Bun)
+            with my_context:
+                with autocast(device_type='cuda', dtype=torch.float16, enabled=args.amp):
+                    model_module = unwrap_model(model)
+                    model_module.backbone.backbone.set_sample_config(sample_config=max_config)
+                    batched = model_module.data_preprocessor(sample_batched, True)
+
+                    handle_S = None
+                    if args.f_distill:
+                        handle_S = model_module.backbone.register_forward_hook(hook_fn_S)
+
+                    losses = model(**batched, mode='loss')
+                    loss_max, _ = model_module.parse_losses(losses)
+                    loss_max, s_loss, f_loss = calc_distill_loss_and_return_components(
+                        args, loss_max, feat_T_s4, features, global_step, num_total_steps
+                    )
+                    if handle_S: handle_S.remove()
+                
+                # 记录 Log
+                log_avg_loss += loss_max.item()
+                log_spat_loss += s_loss.item()
+                log_freq_loss += f_loss.item()
+
+                loss_max = loss_max / total_subnets_per_step
+                if args.amp:
+                    scaler.scale(loss_max).backward()
+                else:    
+                    loss_max.backward()
+
+            # Sandwich Rule Step 3: 训练 Random Subnets (The Meat)
+            for i in range(n_random_subnets):
+                # 只有最后一个子网 Backward 时才同步梯度 (DDP)
+                is_last_subnet = (i == n_random_subnets - 1)
+                my_context = nullcontext() if (is_last_subnet or not args.distributed) else model.no_sync()
+
+                with my_context:
+                    with autocast(device_type='cuda', dtype=torch.float16, enabled=args.amp):
+                        sample_config = ss.sample(n_samples=1)[0]
+                        model_module.backbone.backbone.set_sample_config(sample_config=sample_config)
+
+                        if args.f_distill:
+                            handle_S = model_module.backbone.register_forward_hook(hook_fn_S)
+
+                        losses = model(**batched, mode='loss')
+                        loss_rand, _ = model_module.parse_losses(losses)
+                        loss_rand, s_loss, f_loss = calc_distill_loss_and_return_components(
+                            args, loss_rand, feat_T_s4, features, global_step, num_total_steps
+                        )
+                        if handle_S: handle_S.remove()
+                    
+                    # 记录 Log
+                    log_avg_loss += loss_rand.item()
+                    log_spat_loss += s_loss.item()
+                    log_freq_loss += f_loss.item()
+
+                    loss_rand = loss_rand / total_subnets_per_step
+                    if args.amp:
+                        scaler.scale(loss_rand).backward()
+                    else:
+                        loss_rand.backward()
+
+            if args.max_norm > 0:
+                if args.amp:
+                    scaler.unscale_(optimizer)
+                grad_norm = nn.utils.clip_grad_norm_(model.parameters(), args.max_norm)
+                # print(f'grad norm: {grad_norm:.2f}')
+
+            if args.amp:
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                optimizer.step()
+
+            optimizer.zero_grad()
+
+            scheduler.step()
+            current_lr = optimizer.param_groups[0]['lr']
+            current_lr_kd = optimizer.param_groups[1]['lr'] if args.f_distill else 0
+
+            # 计算 Average
+            log_avg_loss /= total_subnets_per_step
+            log_spat_loss /= total_subnets_per_step
+            log_freq_loss /= total_subnets_per_step
+
+            # show log and save result
+            if global_step % 100 == 0:
+                if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
+                    logger.info(
+                        '[epoch][s/gs]: [{}][{}/{}], lr: {:.8f}, '
+                        'Avg_Loss: {:.4f}, Spat_Loss: {:.4f}, Freq_Loss: {:.4f}'.format(
+                        epoch, step, global_step, current_lr, 
+                        log_avg_loss, log_spat_loss, log_freq_loss
+                    ))
+                    
+                    if torch.isnan(torch.tensor(log_avg_loss)).any():
+                        logger.info('NaN in loss occurred. Aborting training.')
+                        return -1
+
+            duration += time.time() - before_op_time
+            if global_step and global_step % args.log_freq == 0:
+                var_sum = [var.sum().item() for var in model.parameters() if var.requires_grad]
+                var_cnt = len(var_sum)
+                var_sum = np.sum(var_sum)
+                examples_per_sec = cfg.train_dataloader.batch_size / duration * args.log_freq
+                duration = 0
+                time_sofar = (time.time() - start_time) / 3600
+                training_time_left = (num_total_steps / global_step - 1.0) * time_sofar
+
+                print_string = 'GPU: {} | examples/s: {:4.2f} | loss: {:.5f} | var sum: {:.3f} avg: {:.3f} | time elapsed: {:.2f}h | time left: {:.2f}h'
+                logger.info(print_string.format(args.gpu, examples_per_sec, log_avg_loss, var_sum.item(), var_sum.item()/var_cnt, time_sofar, training_time_left))
+
+                if not args.multiprocessing_distributed or (args.multiprocessing_distributed
+                                                            and args.rank % ngpus_per_node == 0):
+                    writer.add_scalar('train_loss', log_avg_loss, global_step)
+                    writer.add_scalar('learning_rate', current_lr, global_step)
+                    writer.add_scalar('learning_rate_kd', current_lr_kd, global_step)
+                    writer.add_scalar('var_average', var_sum.item()/var_cnt, global_step)
+
+
+        if args.do_online_eval:
             barrier()
             time.sleep(0.1)
             metrics_dict = online_eval(args, model, dataloader_eval, evaluator=evaluator, logger=logger, ss=ss)
@@ -454,7 +542,7 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
                 eval_summary_writer.flush()
 
                 if metrics_dict is not None:
-                    for metric_name in key_metrics:
+                    for metric_name in ['coco/bbox_mAP', 'coco/segm_mAP']:
                         curr = float(metrics_dict[metric_name])
                         is_best = False
                         if curr >= best_vals[metric_name]:
@@ -486,9 +574,10 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
                             }
                             torch.save(checkpoint, save_path)
 
-                        if is_best and metric_name == 'mIoU':
+                        if is_best and metric_name == 'coco/bbox_mAP':
                             link_map = {
-                                'mIoU': 'best_mIoU.pth',
+                                'coco/bbox_mAP': 'best_bbox_mAP.pth',
+                                'coco/segm_mAP': 'best_segm_mAP.pth'
                             }
                             link_name = link_map[metric_name]
                             symlink_path = os.path.join(args.log_directory, link_name)
@@ -501,6 +590,8 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
             model.train()
             block_print()
             enable_print()
+
+        epoch += 1
        
     if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
         writer.close()
@@ -517,7 +608,7 @@ def main():
     os.system(command)
 
     args_out_path = os.path.join(args.log_directory, args.model_name)
-    command = 'cp ' + sys.argv[1] + ' ' + args_out_path
+    command = 'cp ' + sys.argv[1][1:] + ' ' + args_out_path
     os.system(command)
 
     save_files = True

@@ -1,0 +1,26 @@
+SegmentNAS/configs/upernet/upernet_evom_4xb4-160k_ade20k-512x512_max.py
+SegmentNAS/configs/depthanything/depth_anything_large_mask2former_16xb1_80k_cityscapes_896x896.py
+--model_name mamba_upernet
+--optimizer adamw
+--total_iters 160000
+--eval_interval 16000
+--learning_rate 6e-5
+--weight_decay 0.01
+--max_norm -1
+--log_directory ./runs/ade20k/00_train/run_only_change_backbone_kd_debug/
+--multiprocessing_distributed
+--dist_url tcp://127.0.0.1:2369
+--devices 4,5,6,7
+
+--log_freq 1000
+--do_online_eval
+
+--mlp_ratio "[4.0]"
+--d_state "[64]"
+--ssd_expand "[4]"
+
+--dynamic_batch_size 1
+--kd_ratio 0.0
+--f_distill
+--alpha_1 0.001
+--alpha_2 0.0007
