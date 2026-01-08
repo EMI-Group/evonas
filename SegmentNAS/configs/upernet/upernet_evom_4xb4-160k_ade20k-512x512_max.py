@@ -14,5 +14,5 @@ model = dict(
     auxiliary_head=dict(in_channels=256, num_classes=150,act_cfg=dict(type='ReLU', inplace=False),)
 )
 
-# train_dataloader = dict(batch_size=4) # as gpus=4
+train_dataloader = dict(batch_size=4) # as gpus=4
 

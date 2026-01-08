@@ -129,7 +129,7 @@ model = dict(
                 ]),
             sampler=dict(type='mmdet.MaskPseudoSampler'))),
     train_cfg=dict(),
-    test_cfg=dict(mode='slide', crop_size=crop_size, stride=(426, 426)))
+    test_cfg=dict(mode='whole'))
 
 # dataset config
 train_pipeline = [

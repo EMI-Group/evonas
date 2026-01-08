@@ -1,6 +1,6 @@
 # dataset settings
 dataset_type = 'ADE20KDataset'
-data_root = '/data/dataset/ADE20K/ADEChallengeData2016'
+data_root = '/mnt/8T-1/datasets/ADE20K/ADEChallengeData2016'
 crop_size = (512, 512)
 
 backend_args = None

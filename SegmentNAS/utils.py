@@ -14,6 +14,7 @@ import random
 import argparse
 import shlex
 from torch.optim.lr_scheduler import LinearLR, PolynomialLR, SequentialLR
+import torch.nn.functional as F
 
 def convert_arg_line_to_args(arg_line):
     return shlex.split(arg_line)
@@ -593,11 +594,60 @@ def build_iter_poly_scheduler(optimizer,
     return scheduler
 
 
-def pad_to_multiple(x, n=14, pad_value=0.0):
+def pad_to_divisor_rb(x, divisor=14, pad_val=0.0):
+    """right/bottom pad到divisor倍数；返回pad后的x以及pad前(H,W)"""
     B, C, H, W = x.shape
-    Hn = (H + n - 1) // n * n   # 向上取整
-    Wn = (W + n - 1) // n * n
-    ph, pw = Hn - H, Wn - W
-    if ph > 0 or pw > 0:
-        x = torch.nn.functional.pad(x, (0, pw, 0, ph), value=pad_value)  # 右/下补
-    return x, ph, pw
+    newH = (H + divisor - 1) // divisor * divisor
+    newW = (W + divisor - 1) // divisor * divisor
+    x_pad = F.pad(x, (0, newW - W, 0, newH - H), value=pad_val)
+    return x_pad, (H, W)
+
+def crop_like(feat, ref_feat_or_hw):
+    """把feat裁成和ref一致的空间尺寸（右/下裁）"""
+    if isinstance(ref_feat_or_hw, tuple):
+        H, W = ref_feat_or_hw
+    else:
+        H, W = ref_feat_or_hw.shape[-2:]
+    return feat[..., :H, :W]
+
+def pad_inputs_and_sync_metas_to_divisor(
+    batched: dict,
+    divisor: int = 14,
+    pad_val: float = 0.0,
+    force_crop_3d_shape: bool = True,
+):
+    """
+    打包逻辑：
+      1) batched['inputs'] pad 到 divisor 倍数（右/下补边）
+      2) 同步 batched['data_samples'] 的 metainfo，保证 shape 字段为 2D，且写入 pad 后尺寸
+
+    Returns:
+      batched: 原地修改并返回
+      hw0: (H0, W0) pad 前尺寸
+      hw_pad: (Hpad, Wpad) pad 后尺寸
+    """
+    x_pad, (H0, W0) = pad_to_divisor_rb(batched['inputs'], divisor=divisor, pad_val=pad_val)
+    batched['inputs'] = x_pad
+    Hpad, Wpad = x_pad.shape[-2:]
+
+    for ds in batched['data_samples']:
+        mi = ds.metainfo
+
+        # 常用字段：写成 2D
+        mi['img_shape'] = (Hpad, Wpad)
+        mi['pad_shape'] = (Hpad, Wpad)
+        mi['batch_input_shape'] = (Hpad, Wpad)
+
+        # 避免 (H, W, 3) 被某些 head 直接当 size 用
+        if 'ori_shape' in mi and isinstance(mi['ori_shape'], (tuple, list)) and len(mi['ori_shape']) == 3:
+            mi['ori_shape'] = tuple(mi['ori_shape'][:2])
+
+        # 兜底：如果还有其它 (H,W,3) 的 shape 字段，也截成 (H,W)
+        if force_crop_3d_shape:
+            for k, v in list(mi.items()):
+                if isinstance(v, (tuple, list)) and len(v) == 3 and all(isinstance(x, int) for x in v):
+                    mi[k] = tuple(v[:2])
+
+        ds.set_metainfo(mi)
+
+    return batched, (H0, W0), (Hpad, Wpad)

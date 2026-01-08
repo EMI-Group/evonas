@@ -103,6 +103,8 @@ pip install ftfy==6.3.1
 
 2026/1/6 update SuperNet Training (Segmentation training by iter)
 
+2026/1/8 update SuperNet Training (Segmentation Distillation through dynamic resolution, add DepthAnything v1 teacher for ADE20K)
+
 ------
 
 ##  Search Space

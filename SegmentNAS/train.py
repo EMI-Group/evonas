@@ -25,7 +25,7 @@ from search_space import MambaSearchSpace
 from torch.amp import autocast, GradScaler
 
 from supernet_pool import ArchitecturePool
-from utils import build_iter_lambda_scheduler, build_iter_poly_scheduler, pad_to_multiple
+from utils import build_iter_lambda_scheduler, build_iter_poly_scheduler, pad_to_divisor_rb, crop_like, pad_inputs_and_sync_metas_to_divisor
 from SegmentNAS.networks.depth_anything import dinov2
 from mmengine.registry import MODELS 
 from mmengine.evaluator import Evaluator
@@ -62,6 +62,7 @@ def parse_args():
 
     # Knowledge distillation
     parser.add_argument('--kd_ratio',                  type=float,   help='the ratio of knowledge distillation', default=0)
+    parser.add_argument('--teacher_ckpt',              type=str,     help='the path of teacher checkpoint')
     parser.add_argument('--f_distill',                 action='store_true',   help='if set, will use mid feature distillation loss')
     parser.add_argument('--alpha_1',                   type=float, help='weight coefficient for spatial loss (spat_loss)', default=0.08)
     parser.add_argument('--alpha_2',                   type=float, help='weight coefficient for frequency loss (freq_loss)', default=0.06)
@@ -106,6 +107,30 @@ def parse_args():
     return args
 
 
+# @torch.no_grad()
+# def online_eval(args, model, dataloader_eval, evaluator=None, logger=None, ss=None):
+#     ''' for teacher-only eval '''
+#     model.eval()
+#     model_module = unwrap_model(model)
+
+#     for _, eval_sample_batched in enumerate(tqdm(dataloader_eval)):
+#         # 1) eval 预处理：一定用 training=False
+#         batched = model_module.data_preprocessor(eval_sample_batched, False)
+#         # 2) teacher-only pad 到 14 倍数, 并同步meta信息
+#         batched, (H0, W0), (Hpad, Wpad) = pad_inputs_and_sync_metas_to_divisor(
+#             batched, divisor=14, pad_val=0.0
+#         )
+#         # 3) forward predict（避免 val_step 再跑一次 preprocessor）
+#         with mautocast(enabled=args.amp):
+#             preds = model_module._run_forward(batched, mode='predict')
+
+#         evaluator.process(data_samples=preds, data_batch=batched)
+
+#     metrics_dict = evaluator.evaluate(len(dataloader_eval.dataset))
+#     logger.info(metrics_dict)
+
+#     return metrics_dict
+
 @torch.no_grad()
 def online_eval(args, model, dataloader_eval, evaluator=None, logger=None, ss=None):
     model.eval()
@@ -147,15 +172,12 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
     model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
     model.init_weights()
     model.train()
-    
-    # load_checkpoint(model, './checkpoints/mask2former_swin-l-in22k-384x384-pre_8xb2-90k_cityscapes-512x1024_20221202_141901-28ad20f1.pth', map_location='cpu')
 
     ### teacher model
     if args.kd_ratio > 0 or args.f_distill:
         t_cfg = Config.fromfile(args.teacher_config)
         teacher_model = MODELS.build(t_cfg.model)
-        load_checkpoint(teacher_model, './checkpoints/cityscapes_vitl_mIoU_86.4.pth', map_location='cpu', strict=True)
-        # load_checkpoint(teacher_model, './checkpoints/upernet_r101_512x1024_80k_cityscapes_20200607_002403-f05f2345.pth', map_location='cpu')
+        load_checkpoint(teacher_model, args.teacher_ckpt, map_location='cpu', strict=True)
         # load_checkpoint(teacher_model, './checkpoints/mask2former_swin-l-in22k-384x384-pre_8xb2-90k_cityscapes-512x1024_20221202_141901-28ad20f1.pth', map_location='cpu', strict=True)
         logger.info("Successed loading weights for teacher model")
     
@@ -164,8 +186,6 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
         alpha=[args.alpha_1, args.alpha_2],
         student_dims=512, # student feature dimension
         teacher_dims=1024,  # teacher feature dimension   e.g. 1024 for DA; 2048 for upernet-r101; 1536 for mask2former_swin-l
-        query_hw=(37,74),  # shape of tearcher feature   e.g.(37,74) for DA; (16,32) for mask2former_swin-l
-        pos_hw=(16, 32),  # shape of student feature 
         pos_dims=1024,  # same to teacher_dims
         self_query=True,
         softmax_scale=[5.,5.],
@@ -268,7 +288,7 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
 
     ss = MambaSearchSpace(args.mlp_ratio, args.d_state, args.ssd_expand, open_depth=args.open_depth)
 
-    # metrics_dict = online_eval(args, model, dataloader_eval, evaluator=evaluator, logger=logger, ss=ss)
+    # metrics_dict = online_eval(args, teacher_model, dataloader_eval, evaluator=evaluator, logger=logger, ss=ss)
     # assert False,'test'
 
     # Logging
@@ -351,9 +371,9 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
                 with autocast(device_type='cuda', dtype=torch.float16, enabled=args.amp):
                     t_module = unwrap_model(teacher_model)
                     handle_T = t_module.backbone.register_forward_hook(hook_fn_T)
-                    # fix_inputs, ph, pw = pad_to_multiple(batched['inputs'], n=14, pad_value=0.0)  # for DA
-                    # _ = t_module.extract_feat(fix_inputs)
-                    _ = t_module.extract_feat(batched['inputs'])
+                    t_inputs, hw0 = pad_to_divisor_rb(batched['inputs'], divisor=14, pad_val=0.0)
+                    _ = t_module.extract_feat(t_inputs)
+                    # _ = t_module.extract_feat(batched['inputs'])
 
                 if args.f_distill:
                     feat_T_s4 = features.pop('feat_T_s4')            
