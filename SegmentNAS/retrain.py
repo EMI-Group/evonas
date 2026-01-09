@@ -12,6 +12,7 @@ sys.path.insert(0, PROJECT_ROOT)
 
 import argparse
 import numpy as np
+import torch.nn.functional as F
 from tqdm import tqdm
 from mmengine import Config
 from timm.scheduler.cosine_lr import CosineLRScheduler
@@ -24,7 +25,7 @@ from SegmentNAS.networks import model
 from search_space import MambaSearchSpace
 from torch.amp import autocast, GradScaler
 
-from utils import build_iter_lambda_scheduler, build_iter_poly_scheduler, pad_to_multiple
+from utils import build_iter_lambda_scheduler, build_iter_poly_scheduler, pad_to_divisor_rb
 from SegmentNAS.networks.depth_anything import dinov2
 from mmengine.registry import MODELS 
 from mmengine.evaluator import Evaluator
@@ -60,6 +61,7 @@ def parse_args():
 
     # Knowledge distillation
     parser.add_argument('--kd_ratio',                  type=float,   help='the ratio of knowledge distillation', default=0)
+    parser.add_argument('--teacher_ckpt',              type=str,     help='the path of teacher checkpoint')
     parser.add_argument('--f_distill',                 action='store_true',   help='if set, will use mid feature distillation loss')
     parser.add_argument('--alpha_1',                   type=float, help='weight coefficient for spatial loss (spat_loss)', default=0.08)
     parser.add_argument('--alpha_2',                   type=float, help='weight coefficient for frequency loss (freq_loss)', default=0.06)
@@ -73,10 +75,11 @@ def parse_args():
     parser.add_argument('--optimizer',                 type=str,   help='optimizer to use', default='adamw')
     parser.add_argument('--learning_rate',             type=float, help='initial learning rate', default=1e-4)
     parser.add_argument('--weight_decay',              type=float, help='weight decay for optimizer', default=0.05)
-    parser.add_argument('--num_epochs',                type=int,   help='number of epochs', default=50)
+    parser.add_argument('--total_iters',               type=int,   help='number of iters for training', default=160000)
     parser.add_argument('--dynamic_batch_size',        type=int,   help='the number of dynamic batch size', default=1)
     parser.add_argument('--max_norm',                  type=float, help='maximum norm for gradient clipping, (grad clip is not used if -1 or 0)', default=-1)
     parser.add_argument('--amp',                                   help='enable mixed precision (AMP)', action='store_true')
+    parser.add_argument('--eval_interval',                  type=int,   help='evaluation frequency', default=16000)
 
     # Multi-gpu training
     parser.add_argument('--world_size',                type=int,   help='number of nodes for distributed training', default=1)
@@ -132,9 +135,6 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
 
     # get logger after init DDP
     logger = get_root_logger(args.log_directory)
-    
-    if args.gpu is not None:
-        logger.info("== Use GPU: {} for training".format(args.gpu))
 
     if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
         logger.info('args: '+str(args))
@@ -164,22 +164,19 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
     if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
         logger.info('model: '+str(model))
 
-    # load_checkpoint(model, './checkpoints/mask_rcnn_swin-s-p4-w7_fpn_fp16_ms-crop-3x_coco_20210903_104808-b92c91f1.pth', map_location='cpu')
 
     ### teacher model
     if args.kd_ratio > 0 or args.f_distill:
         t_cfg = Config.fromfile(args.teacher_config)
         teacher_model = MODELS.build(t_cfg.model)
-        load_checkpoint(teacher_model, './checkpoints/mask2former_swin-l-in22k-384x384-pre_8xb2-90k_cityscapes-512x1024_20221202_141901-28ad20f1.pth', map_location='cpu', strict=True)
+        load_checkpoint(teacher_model, args.teacher_ckpt, map_location='cpu', strict=True)
         logger.info("Successed loading weights for teacher model")
     
     from distillation.fmdv2 import FreqMaskingDistillLossv2
     dis_modules_s4 = FreqMaskingDistillLossv2(
         alpha=[args.alpha_1, args.alpha_2],
         student_dims=512, # student feature dimension
-        teacher_dims=1024,  # teacher feature dimension
-        query_hw=(37,74),  # shape of tearcher feature 
-        pos_hw=(16, 32),  # shape of student feature 
+        teacher_dims=1024,  # teacher feature dimension   e.g. 1024 for DA; 2048 for upernet-r101; 1536 for mask2former_swin-l
         pos_dims=1024,  # same to teacher_dims
         self_query=True,
         softmax_scale=[5.,5.],
@@ -293,7 +290,8 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
                 eval_summary_path = os.path.join(args.log_directory, args.model_name, 'eval')
             eval_summary_writer = SummaryWriter(eval_summary_path, flush_secs=30)
 
-    global_step = -1
+    global_step = 0  
+    last_epoch = -1
     key_metrics = ['mIoU']
     best_vals = {k: float('-inf') for k in key_metrics}
     best_steps = {k: -1 for k in key_metrics}
@@ -307,16 +305,12 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
 
     if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
         logger.info("== Initial variables' sum: {:.3f}, avg: {:.3f}".format(var_sum, var_sum/var_cnt))
-
-    steps_per_epoch = len(dataloader)
-    num_total_steps = args.num_epochs * steps_per_epoch
-    epoch = 0
-    logger.info("== Total training steps: {}".format(num_total_steps))
+        logger.info("== Total training steps: {}".format(args.total_iters))
 
     scheduler = build_iter_poly_scheduler(
         optimizer,
-        warmup_iters=1500 if num_total_steps > 30000 else int(0.05 * num_total_steps),
-        total_iters=num_total_steps,
+        warmup_iters=1500 if args.total_iters > 30000 else int(0.05 * args.total_iters),
+        total_iters=args.total_iters,
         start_factor=1e-6,
         power=1.0
     )
@@ -326,192 +320,242 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
     # assert False,'debug'
 
     features = {}
+    student_head_out = {}
+
     def hook_fn_S(module, input, output):
         features['feat_S_s4'] = output[3]
     def hook_fn_T(module, input, output):
         features['feat_T_s4'] = output[3]
 
+    def hook_student_head(module, input, output):
+        student_head_out['logits'] = output # UPerHead forward 输出的是 logits
+
+    handle_student = model_module.decode_head.conv_seg.register_forward_hook(hook_student_head)
+
     ################### train loop ########################
     model.train()
-    while epoch < args.num_epochs:
-        if args.distributed:
-            # dataloader.sampler.set_epoch(epoch)
-            dataloader.batch_sampler.sampler.set_epoch(epoch)
+    train_loader_iter = iter(dataloader)
+    iters_per_epoch = len(dataloader)
+
+    while global_step < args.total_iters:
+
+        global_step += 1
+        current_epoch = (global_step - 1) // iters_per_epoch
+        if current_epoch != last_epoch:
+            dataloader.sampler.set_epoch(current_epoch)
+            # 固定随机种子，为了保证每个iter采样架构一致
+            random.seed(current_epoch)
+            np.random.seed(current_epoch)
+            last_epoch = current_epoch
+    
+        optimizer.zero_grad()
+        before_op_time = time.time()
+
+        try:
+            sample_batched = next(train_loader_iter)
+        except StopIteration:
+            train_loader_iter = iter(dataloader)
+            sample_batched = next(train_loader_iter)
+
+
+        model_module = unwrap_model(model)
+        batched = model_module.data_preprocessor(sample_batched, True)
         
-        random.seed(epoch)
-        np.random.seed(epoch)
-
-        for step, sample_batched in enumerate(dataloader):
-            optimizer.zero_grad()
-            before_op_time = time.time()
-            global_step += 1
-
-            model_module = unwrap_model(model)
-            batched = model_module.data_preprocessor(sample_batched, True)
-            
-            if args.kd_ratio > 0 or args.f_distill:
-                with torch.no_grad():
-                    teacher_model.eval()
-                    with autocast(device_type='cuda', dtype=torch.float16, enabled=args.amp):
-                        t_module = unwrap_model(teacher_model)
-                        handle_T = t_module.backbone.register_forward_hook(hook_fn_T)
-                        fix_inputs, ph, pw = pad_to_multiple(batched['inputs'], n=14, pad_value=0.0)
-                        _ = t_module.extract_feat(fix_inputs)
-                    if args.f_distill:
-                        feat_T_s4 = features.pop('feat_T_s4')
-                        # feat_T_s4 = feat_T_s4[:,:,feat_T_s4.shape[-2]-1, feat_T_s4.shape[-1]-1]
-
-            for _ in range(args.dynamic_batch_size):
+        if args.kd_ratio > 0 or args.f_distill:
+            with torch.no_grad():
+                teacher_model.eval()
                 with autocast(device_type='cuda', dtype=torch.float16, enabled=args.amp):
-                    # random sample subnet
-                    if cfg.model.backbone.version == 'SuperNet':
-                        model_module.backbone.backbone.set_sample_config(sample_config=selected_config)
-                    if args.f_distill:
-                        # handle_S = model_module.backbone.layer4.register_forward_hook(hook_fn_S)  # for resnet50
-                        handle_S = model_module.backbone.register_forward_hook(hook_fn_S)
+                    t_module = unwrap_model(teacher_model)
+                    handle_T = t_module.backbone.register_forward_hook(hook_fn_T)
+                    # Pad 教师输入到 14 的倍数 (Swin Transformer 窗口要求)
+                    t_inputs, (h_origin, w_origin) = pad_to_divisor_rb(batched['inputs'], divisor=14, pad_val=0.0)
+                    # 构造临时的 Metas 给教师
+                    t_batch_img_metas = []
+                    for ds in batched['data_samples']:
+                        meta = ds.metainfo.copy()
+                        meta['img_shape'] = t_inputs.shape[-2:]
+                        meta['pad_shape'] = t_inputs.shape[-2:]
+                        meta['batch_input_shape'] = t_inputs.shape[-2:]
+                        if 'ori_shape' in meta and isinstance(meta['ori_shape'], (tuple, list)) and len(meta['ori_shape']) == 3:
+                            meta['ori_shape'] = tuple(meta['ori_shape'][:2])
+                        t_batch_img_metas.append(meta)
 
-                    if isinstance(batched, dict):
-                        losses = model(**batched, mode='loss')
-                    elif isinstance(batched, (list, tuple)):
-                        losses = model(*batched, mode='loss')
-                    else:
-                        raise TypeError(f'Output of data_preprocessor must be dict/tuple/list, got {type(batched)}')
+                    t_logits = t_module.encode_decode(t_inputs, t_batch_img_metas)
+                    # print(f'[debug][{args.rank}]: t_logits(HW)={t_logits.shape}, h_origin={h_origin}, w_origin={w_origin}')
+                    t_logits = t_logits[:, :, :h_origin, :w_origin]
 
-                    loss, log_vars = model_module.parse_losses(losses)
-                    # log_vars: {'loss_cls':0.8, 'loss_bbox':0.6, 'loss_mask':0.4, 'loss':1.8}
+                t_logits = t_logits.float().detach()  # 不是传统 logits, 也不是单纯的 softmax 概率
+
+                if args.f_distill:
+                    feat_T_s4 = features.pop('feat_T_s4')  
                 
-                    ### teacher model
-                    spat_loss = torch.tensor(0.0).cuda(args.gpu)
-                    freq_loss = torch.tensor(0.0).cuda(args.gpu)
-                    kd_loss = torch.tensor(0.0).cuda(args.gpu)
-                    if args.f_distill:
-                        feat_S_s4 = features.pop('feat_S_s4')
-                        alig_feat_T_s4  = torch.nn.functional.interpolate(
-                            feat_T_s4, size=(feat_S_s4.shape[2], feat_S_s4.shape[3]), mode='bilinear', align_corners=False)
-                        spat_loss, freq_loss = dis_modules_s4(feat_S_s4, alig_feat_T_s4)
+                handle_T.remove()      
 
-                        # w_ratio = 0.2 + 0.8 * (1 - global_step / num_total_steps)
-                        # spat_loss = w_ratio * spat_loss
-                        # freq_loss = w_ratio * freq_loss
-                        handle_T.remove()
-                        handle_S.remove()
+        for _ in range(args.dynamic_batch_size):
+            with autocast(device_type='cuda', dtype=torch.float16, enabled=args.amp):
+                # random sample subnet
+                if cfg.model.backbone.version == 'SuperNet':
+                    model_module.backbone.backbone.set_sample_config(sample_config=selected_config)
+                if args.f_distill:
+                    handle_S = model_module.backbone.register_forward_hook(hook_fn_S)
 
-                    if args.kd_ratio > 0 or args.f_distill:
-                        loss = (1 - args.kd_ratio) * loss + args.kd_ratio * kd_loss + spat_loss + freq_loss
+                losses = model(**batched, mode='loss')
+                loss, log_vars = model_module.parse_losses(losses)
+                # log_vars: {'loss_cls':0.8, 'loss_bbox':0.6, 'loss_mask':0.4, 'loss':1.8}
+            
+                ### teacher model
+                spat_loss = torch.tensor(0.0).cuda(args.gpu)
+                freq_loss = torch.tensor(0.0).cuda(args.gpu)
+                kd_loss = torch.tensor(0.0).cuda(args.gpu)
+                
+                if args.f_distill:
+                    feat_S_s4 = features.pop('feat_S_s4')
+                    spat_loss, freq_loss = dis_modules_s4(feat_S_s4, feat_T_s4)
+                    handle_S.remove()
+
+                if args.kd_ratio > 0:
+                    T = getattr(args, 'kd_T', 1.0)
+                    eps = 1e-6
+
+                    # gt ignore mask (255)
+                    gt = torch.stack([ds.gt_sem_seg.data.squeeze(0) for ds in batched['data_samples']], dim=0)  # (B,H,W)
+                    valid = (gt != model_module.decode_head.ignore_index)
                     
-                    loss = loss / args.dynamic_batch_size
+                    # teacher
+                    p_t = t_logits.clamp_min(0)
+                    p_t = p_t / (p_t.sum(dim=1, keepdim=True) + eps)
 
-                if args.amp:
-                    scaler.scale(loss).backward()
-                else:    
-                    loss.backward()
+                    # student
+                    s_logits = student_head_out['logits']
+                    s_logits = F.interpolate(
+                        s_logits,
+                        size=gt.shape[-2:],
+                        mode='bilinear',
+                        align_corners=model_module.decode_head.align_corners
+                    )
+                    log_p_s = F.log_softmax(s_logits / T, dim=1)
 
-            if args.max_norm > 0:
-                if args.amp:
-                    scaler.unscale_(optimizer)
-                grad_norm = nn.utils.clip_grad_norm_(model.parameters(), args.max_norm)
-                # print(f'grad norm: {grad_norm:.2f}')
+                    # print(f"[DBG][{args.rank}] WARNING: s_logits(HW)={s_logits.shape} t_logits(HW)={t_logits.shape}")
+
+                    kd_map = F.kl_div(log_p_s, p_t, reduction='none').sum(dim=1)  # (B,H,W)
+                    kd_loss = (kd_map[valid].mean() if valid.any() else kd_map.mean()) * (T * T)
+                    
+                loss = (1 - args.kd_ratio) * loss + args.kd_ratio * kd_loss + spat_loss + freq_loss
+                
+                loss = loss / args.dynamic_batch_size
 
             if args.amp:
-                scaler.step(optimizer)
-                scaler.update()
-            else:
-                optimizer.step()
+                scaler.scale(loss).backward()
+            else:    
+                loss.backward()
 
-            scheduler.step()
-            current_lr = optimizer.param_groups[0]['lr']
-            current_lr_kd = optimizer.param_groups[1]['lr'] if args.f_distill else 0
+        if args.max_norm > 0:
+            if args.amp:
+                scaler.unscale_(optimizer)
+            grad_norm = nn.utils.clip_grad_norm_(model.parameters(), args.max_norm)
+            # print(f'grad norm: {grad_norm:.2f}')
 
-            # show log and save result
-            if global_step % 100 == 0:
-                if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
-                    logger.info('[epoch][s/s_per_e/gs]: [{}][{}/{}/{}], lr: {:.10f}, total_loss: {:.6f}, kd_loss: {:.6f}, spat_loss: {:.6f}, freq_loss: {:.6f}'.format(epoch, step, steps_per_epoch, global_step, current_lr, loss.item(), args.kd_ratio * kd_loss.item(), spat_loss.item(), freq_loss.item()))
-                    if np.isnan(loss.cpu().item()):
-                        logger.info('NaN in loss occurred. Aborting training.')
-                        return -1
+        if args.amp:
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            optimizer.step()
 
-            duration += time.time() - before_op_time
-            if global_step and global_step % args.log_freq == 0:
-                var_sum = [var.sum().item() for var in model.parameters() if var.requires_grad]
-                var_cnt = len(var_sum)
-                var_sum = np.sum(var_sum)
-                examples_per_sec = cfg.train_dataloader.batch_size / duration * args.log_freq
-                duration = 0
-                time_sofar = (time.time() - start_time) / 3600
-                training_time_left = (num_total_steps / global_step - 1.0) * time_sofar
+        scheduler.step()
+        current_lr = optimizer.param_groups[0]['lr']
+        current_lr_kd = optimizer.param_groups[1]['lr'] if args.f_distill else 0
 
-                print_string = 'GPU: {} | examples/s: {:4.2f} | loss: {:.5f} | var sum: {:.3f} avg: {:.3f} | time elapsed: {:.2f}h | time left: {:.2f}h'
-                logger.info(print_string.format(args.gpu, examples_per_sec, loss.item(), var_sum.item(), var_sum.item()/var_cnt, time_sofar, training_time_left))
+        # show log and save result
+        if global_step % 100 == 0:
+            if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
+                logger.info('Iter [{}/{}], lr: {:.10f}, total_loss: {:.6f}, kd_loss: {:.6f}, spat_loss: {:.6f}, freq_loss: {:.6f}'.format(
+                    global_step, args.total_iters, current_lr, loss.item(), args.kd_ratio * kd_loss.item(), spat_loss.item(), freq_loss.item()))
+                if np.isnan(loss.cpu().item()):
+                    logger.info('NaN in loss occurred. Aborting training.')
+                    return -1
 
-                if not args.multiprocessing_distributed or (args.multiprocessing_distributed
-                                                            and args.rank % ngpus_per_node == 0):
-                    writer.add_scalar('train_loss', loss.item(), global_step)
-                    writer.add_scalar('learning_rate', current_lr, global_step)
-                    writer.add_scalar('learning_rate_kd', current_lr_kd, global_step)
-                    writer.add_scalar('var_average', var_sum.item()/var_cnt, global_step)
+        duration += time.time() - before_op_time
+        if global_step and global_step % args.log_freq == 0:
+            var_sum = [var.sum().item() for var in model.parameters() if var.requires_grad]
+            var_cnt = len(var_sum)
+            var_sum = np.sum(var_sum)
+            examples_per_sec = cfg.train_dataloader.batch_size / duration * args.log_freq
+            duration = 0
+            time_sofar = (time.time() - start_time) / 3600
+            training_time_left = (args.total_iters / global_step - 1.0) * time_sofar
 
+            print_string = 'GPU: {} | examples/s: {:4.2f} | loss: {:.5f} | var sum: {:.3f} avg: {:.3f} | time elapsed: {:.2f}h | time left: {:.2f}h'
+            logger.info(print_string.format(args.gpu, examples_per_sec, loss.item(), var_sum.item(), var_sum.item()/var_cnt, time_sofar, training_time_left))
 
-        if args.do_online_eval and (epoch % 10 == 0 or epoch == args.num_epochs - 1):
-            barrier()
-            time.sleep(0.1)
-            metrics_dict = online_eval(args, model, dataloader_eval, evaluator=evaluator, logger=logger, sample_config=selected_config)
-            
             if not args.multiprocessing_distributed or (args.multiprocessing_distributed
                                                         and args.rank % ngpus_per_node == 0):
-                for k, v in metrics_dict.items():
-                    eval_summary_writer.add_scalar(k, float(v), int(global_step))
-                eval_summary_writer.flush()
+                writer.add_scalar('train_loss', loss.item(), global_step)
+                writer.add_scalar('learning_rate', current_lr, global_step)
+                writer.add_scalar('learning_rate_kd', current_lr_kd, global_step)
+                writer.add_scalar('var_average', var_sum.item()/var_cnt, global_step)
 
-                if metrics_dict is not None:
-                    for metric_name in key_metrics:
-                        curr = float(metrics_dict[metric_name])
-                        is_best = False
-                        if curr >= best_vals[metric_name]:
-                            old_best = best_vals[metric_name]
-                            old_step = best_steps[metric_name]
 
-                            best_vals[metric_name] = curr
-                            best_steps[metric_name] = int(global_step)
-                            is_best = True
-                        
-                        if is_best:
-                            # clean old best（if exists）
-                            old_name = f"/model-{old_step}-best_{metric_name.replace('/', '_')}_{old_best:.5f}"
-                            old_path = os.path.join(args.log_directory, args.model_name + old_name)
-                            if os.path.exists(old_path):
-                                os.remove(old_path)
+    if args.do_online_eval and global_step > 0 and global_step % args.eval_interval == 0:
+        barrier()
+        time.sleep(0.1)
+        metrics_dict = online_eval(args, model, dataloader_eval, evaluator=evaluator, logger=logger, sample_config=selected_config)
+        
+        if not args.multiprocessing_distributed or (args.multiprocessing_distributed
+                                                    and args.rank % ngpus_per_node == 0):
+            for k, v in metrics_dict.items():
+                eval_summary_writer.add_scalar(k, float(v), int(global_step))
+            eval_summary_writer.flush()
 
-                            # save new best weight
-                            save_name = f"/model-{global_step}-best_{metric_name.replace('/', '_')}_{curr:.5f}"
-                            save_path = os.path.join(args.log_directory, args.model_name + save_name)
-                            print(f'New best for {metric_name}: {curr:.5f}. Saving {save_name}')
-                            checkpoint = {
-                                'global_step': global_step,
-                                'model': model.state_dict(),
-                                # 'optimizer': optimizer.state_dict(),  # if need
-                                'best_vals': best_vals,
-                                'best_steps': best_steps,
-                                'best_metric_name': metric_name,
-                            }
-                            torch.save(checkpoint, save_path)
+            if metrics_dict is not None:
+                for metric_name in key_metrics:
+                    curr = float(metrics_dict[metric_name])
+                    is_best = False
+                    if curr >= best_vals[metric_name]:
+                        old_best = best_vals[metric_name]
+                        old_step = best_steps[metric_name]
 
-                        if is_best and metric_name == 'mIoU':
-                            link_map = {
-                                'mIoU': 'best_mIoU.pth',
-                            }
-                            link_name = link_map[metric_name]
-                            symlink_path = os.path.join(args.log_directory, link_name)
-                            # 目标是相对路径，便于移动目录
-                            rel_target = os.path.relpath(save_path, start=os.path.dirname(symlink_path))
-                            if os.path.islink(symlink_path) or os.path.exists(symlink_path):
-                                os.remove(symlink_path)
-                            os.symlink(rel_target, symlink_path)
+                        best_vals[metric_name] = curr
+                        best_steps[metric_name] = int(global_step)
+                        is_best = True
+                    
+                    if is_best:
+                        # clean old best（if exists）
+                        old_name = f"/model-{old_step}-best_{metric_name.replace('/', '_')}_{old_best:.5f}"
+                        old_path = os.path.join(args.log_directory, args.model_name + old_name)
+                        if os.path.exists(old_path):
+                            os.remove(old_path)
 
-            model.train()
-            block_print()
-            enable_print()
+                        # save new best weight
+                        save_name = f"/model-{global_step}-best_{metric_name.replace('/', '_')}_{curr:.5f}"
+                        save_path = os.path.join(args.log_directory, args.model_name + save_name)
+                        print(f'New best for {metric_name}: {curr:.5f}. Saving {save_name}')
+                        checkpoint = {
+                            'global_step': global_step,
+                            'model': model.state_dict(),
+                            # 'optimizer': optimizer.state_dict(),  # if need
+                            'best_vals': best_vals,
+                            'best_steps': best_steps,
+                            'best_metric_name': metric_name,
+                        }
+                        torch.save(checkpoint, save_path)
 
-        epoch += 1
+                    if is_best and metric_name == 'mIoU':
+                        link_map = {
+                            'mIoU': 'best_mIoU.pth',
+                        }
+                        link_name = link_map[metric_name]
+                        symlink_path = os.path.join(args.log_directory, link_name)
+                        # 目标是相对路径，便于移动目录
+                        rel_target = os.path.relpath(save_path, start=os.path.dirname(symlink_path))
+                        if os.path.islink(symlink_path) or os.path.exists(symlink_path):
+                            os.remove(symlink_path)
+                        os.symlink(rel_target, symlink_path)
+
+        model.train()
+        block_print()
+        enable_print()
+
+    handle_student.remove()
        
     if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
         writer.close()

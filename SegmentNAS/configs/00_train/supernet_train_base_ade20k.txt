@@ -1,4 +1,4 @@
-SegmentNAS/configs/upernet/upernet_evom_4xb4-160k_ade20k-512x512_retrain.py
+SegmentNAS/configs/upernet/upernet_evom_4xb4-160k_ade20k-512x512_max.py
 SegmentNAS/configs/depthanything/depth_anything_large_mask2former_16xb1_160k_ade20k_896x896.py
 --teacher_ckpt ./checkpoints/ade20k_vitl_mIoU_59.4.pth
 --model_name mamba_upernet
@@ -8,23 +8,21 @@ SegmentNAS/configs/depthanything/depth_anything_large_mask2former_16xb1_160k_ade
 --learning_rate 6e-5
 --weight_decay 0.01
 --max_norm -1
---log_directory ./runs/ade20k/retrain/run_debug/
+--log_directory ./runs/ade20k/00_train/supernet_train_base_config/
 --multiprocessing_distributed
---dist_url tcp://127.0.0.1:2369
+--dist_url tcp://127.0.0.1:2361
 --devices 0,1,4,5
 
 --log_freq 1000
 --do_online_eval
 
---mlp_ratio "[2.0, 3.5, 3.0, 3.0]"
---d_state "[64, 48, 64]"
---ssd_expand "[2, 3, 4]"
---depth "[[0, 1], [1, 0, 1, 0], [1, 1, 1, 1, 1, 1, 1, 0], [1, 0, 1, 0]]"
+--mlp_ratio "[4.0]"
+--d_state "[64]"
+--ssd_expand "[4]"
 
---ckpt_path ./runs/ade20k/best_mIoU.pth
-
+--dynamic_batch_size 1
 --kd_ratio 0.4
 --f_distill
---alpha_1 0.00003
---alpha_2 0.00002
+--alpha_1 0.0001
+--alpha_2 0.00007
 --amp
