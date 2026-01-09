@@ -162,12 +162,10 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
 
     # get logger after init DDP
     logger = get_root_logger(args.log_directory)
-    
-    if args.gpu is not None:
-        logger.info("== Use GPU: {} for training".format(args.gpu))
 
     if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
-        logger.info('args: '+str(args))
+        logger.info("===== Args Begin =====\n%s\n===== Args End =====", vars(args))
+        logger.info("===== Config Begin =====\n%s\n===== Config End =====", cfg.pretty_text)
 
     model = MODELS.build(cfg.model)
     model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
@@ -327,7 +325,7 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
         power=1.0
     )
 
-    # with open('./segment_model_depthanything.log', 'w') as f:
+    # with open('./segment_model.log', 'w') as f:
     #     f.write(str(model))
     # assert False,'debug'
 

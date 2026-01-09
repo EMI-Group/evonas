@@ -25,6 +25,6 @@ SegmentNAS/configs/depthanything/depth_anything_large_mask2former_16xb1_160k_ade
 
 --kd_ratio 0.4
 --f_distill
---alpha_1 0.00003
---alpha_2 0.00002
+--alpha_1 0.0001
+--alpha_2 0.00007
 --amp
