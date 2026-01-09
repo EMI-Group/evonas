@@ -12,6 +12,7 @@ sys.path.insert(0, PROJECT_ROOT)
 
 import argparse
 import numpy as np
+import torch.nn.functional as F
 from tqdm import tqdm
 from mmengine import Config
 from timm.scheduler.cosine_lr import CosineLRScheduler
@@ -331,14 +332,20 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
     # assert False,'debug'
 
     features = {}
+    student_head_out = {}
+
     def hook_fn_S(module, input, output):
         features['feat_S_s4'] = output[3]
     def hook_fn_T(module, input, output):
         features['feat_T_s4'] = output[3]
 
+    def hook_student_head(module, input, output):
+        student_head_out['logits'] = output # UPerHead forward 输出的是 logits
+
+    handle_student = model_module.decode_head.conv_seg.register_forward_hook(hook_student_head)
+
     ################### train loop ########################
     model.train()
-
     train_loader_iter = iter(dataloader)
     iters_per_epoch = len(dataloader)
 
@@ -371,12 +378,29 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
                 with autocast(device_type='cuda', dtype=torch.float16, enabled=args.amp):
                     t_module = unwrap_model(teacher_model)
                     handle_T = t_module.backbone.register_forward_hook(hook_fn_T)
-                    t_inputs, hw0 = pad_to_divisor_rb(batched['inputs'], divisor=14, pad_val=0.0)
-                    _ = t_module.extract_feat(t_inputs)
-                    # _ = t_module.extract_feat(batched['inputs'])
+                    # Pad 教师输入到 14 的倍数 (Swin Transformer 窗口要求)
+                    t_inputs, (h_origin, w_origin) = pad_to_divisor_rb(batched['inputs'], divisor=14, pad_val=0.0)
+                    # 构造临时的 Metas 给教师
+                    t_batch_img_metas = []
+                    for ds in batched['data_samples']:
+                        meta = ds.metainfo.copy()
+                        meta['img_shape'] = t_inputs.shape[-2:]
+                        meta['pad_shape'] = t_inputs.shape[-2:]
+                        meta['batch_input_shape'] = t_inputs.shape[-2:]
+                        if 'ori_shape' in meta and isinstance(meta['ori_shape'], (tuple, list)) and len(meta['ori_shape']) == 3:
+                            meta['ori_shape'] = tuple(meta['ori_shape'][:2])
+                        t_batch_img_metas.append(meta)
+
+                    t_logits = t_module.encode_decode(t_inputs, t_batch_img_metas)
+                    # print(f'[debug][{args.rank}]: t_logits(HW)={t_logits.shape}, h_origin={h_origin}, w_origin={w_origin}')
+                    t_logits = t_logits[:, :, :h_origin, :w_origin]
+
+                t_logits = t_logits.float().detach()  # 不是传统 logits, 也不是单纯的 softmax 概率
 
                 if args.f_distill:
-                    feat_T_s4 = features.pop('feat_T_s4')            
+                    feat_T_s4 = features.pop('feat_T_s4')  
+                
+                handle_T.remove()          
 
         for _ in range(args.dynamic_batch_size):
             with autocast(device_type='cuda', dtype=torch.float16, enabled=args.amp):
@@ -386,13 +410,7 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
                 if args.f_distill:
                     handle_S = model_module.backbone.register_forward_hook(hook_fn_S)
 
-                if isinstance(batched, dict):
-                    losses = model(**batched, mode='loss')
-                elif isinstance(batched, (list, tuple)):
-                    losses = model(*batched, mode='loss')
-                else:
-                    raise TypeError(f'Output of data_preprocessor must be dict/tuple/list, got {type(batched)}')
-
+                losses = model(**batched, mode='loss')
                 loss, log_vars = model_module.parse_losses(losses)
             
                 ### teacher model
@@ -403,12 +421,39 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
                 if args.f_distill:
                     feat_S_s4 = features.pop('feat_S_s4')
                     spat_loss, freq_loss = dis_modules_s4(feat_S_s4, feat_T_s4)
-
-                    handle_T.remove()
                     handle_S.remove()
+                    
+                if args.kd_ratio > 0:
+                    T = getattr(args, 'kd_T', 1.0)
+                    eps = 1e-6
 
-                if args.kd_ratio > 0 or args.f_distill:
-                    loss = (1 - args.kd_ratio) * loss + args.kd_ratio * kd_loss + spat_loss + freq_loss
+                    # gt ignore mask (255)
+                    gt = torch.stack([ds.gt_sem_seg.data.squeeze(0) for ds in batched['data_samples']], dim=0)  # (B,H,W)
+                    valid = (gt != model_module.decode_head.ignore_index)
+                    
+                    # teacher
+                    p_t = t_logits.clamp_min(0)
+                    p_t = p_t / (p_t.sum(dim=1, keepdim=True) + eps)
+
+                    # student
+                    s_logits = student_head_out['logits']
+                    s_logits = F.interpolate(
+                        s_logits,
+                        size=gt.shape[-2:],
+                        mode='bilinear',
+                        align_corners=model_module.decode_head.align_corners
+                    )
+                    log_p_s = F.log_softmax(s_logits / T, dim=1)
+
+                    # print(f"[DBG][{args.rank}] WARNING: s_logits(HW)={s_logits.shape} t_logits(HW)={t_logits.shape}")
+
+                    kd_map = F.kl_div(log_p_s, p_t, reduction='none').sum(dim=1)  # (B,H,W)
+                    kd_loss = (kd_map[valid].mean() if valid.any() else kd_map.mean()) * (T * T)
+
+                loss = (1 - args.kd_ratio) * loss + args.kd_ratio * kd_loss + spat_loss + freq_loss
+                # print('loss components: total_loss {:.4f}, kd_loss {:.4f}, spat_loss {:.4f}, freq_loss {:.4f}'.format(
+                #     loss.item(), args.kd_ratio * kd_loss.item(), spat_loss.item(), freq_loss.item()
+                # ))
 
                 loss = loss / args.dynamic_batch_size
 
@@ -421,7 +466,6 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
             if args.amp:
                 scaler.unscale_(optimizer)
             grad_norm = nn.utils.clip_grad_norm_(model.parameters(), args.max_norm)
-            # print(f'grad norm: {grad_norm:.2f}')
 
         if args.amp:
             scaler.step(optimizer)
@@ -521,7 +565,9 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
             model.train()
             block_print()
             enable_print()
-       
+
+    handle_student.remove()
+
     if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
         writer.close()
         if args.do_online_eval:
