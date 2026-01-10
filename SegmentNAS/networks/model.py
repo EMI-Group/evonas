@@ -14,6 +14,8 @@ from mmseg.models.decode_heads.decode_head import BaseDecodeHead
 from mmseg.models.utils import resize
 from mmcv.cnn import ConvModule
 ########################################################################################################################
+BN = dict(type='SyncBN', requires_grad=True)
+ACT = dict(type='ReLU', inplace=True)
 
 @MODELS.register_module()
 class MambaBackbone(nn.Module):
@@ -137,31 +139,35 @@ class UPerHead_with_mamba(BaseDecodeHead):
         self.spa_mab1 = SpatialMambaLayer(dim=in_channels[1], depth=depths[2], d_state=1)
         self.spa_mab0 = SpatialMambaLayer(dim=in_channels[0], depth=depths[3], d_state=1)
 
-        self.proj_out3 = nn.Conv2d(in_channels[3], in_channels[3]*2, kernel_size=3, stride=1, padding=1)
-        self.proj_out2 = nn.Conv2d(in_channels[2], in_channels[2]*2, kernel_size=3, stride=1, padding=1)
-        self.proj_out1 = nn.Conv2d(in_channels[1], in_channels[1]*2, kernel_size=3, stride=1, padding=1)
-        self.proj_final = nn.Conv2d(in_channels[0], self.channels, kernel_size=3, stride=1, padding=0)
+        self.proj_out3 = ConvModule(in_channels[3], in_channels[3] // 2, kernel_size=1, norm_cfg=BN, act_cfg=ACT)
+        self.proj_out2 = ConvModule(in_channels[2], in_channels[2] // 2, kernel_size=1, norm_cfg=BN, act_cfg=ACT)
+        self.proj_out1 = ConvModule(in_channels[1], in_channels[1] // 2, kernel_size=1, norm_cfg=BN, act_cfg=ACT)
+        self.proj_final = ConvModule(in_channels[0], self.channels, kernel_size=3, padding=1, norm_cfg=BN, act_cfg=ACT)
             
-        self.conv_p3 = nn.Conv2d(in_channels[3]*2, self.channels, kernel_size=1)
-        self.conv_p2 = nn.Conv2d(in_channels[2]*2, self.channels, kernel_size=1)
-        self.conv_p1 = nn.Conv2d(in_channels[1]*2, self.channels, kernel_size=1)
+        self.conv_p3 = ConvModule(in_channels[3], self.channels, 3, padding=1, norm_cfg=BN, act_cfg=ACT)
+        self.conv_p2 = ConvModule(in_channels[2], self.channels, 3, padding=1, norm_cfg=BN, act_cfg=ACT)
+        self.conv_p1 = ConvModule(in_channels[1], self.channels, 3, padding=1, norm_cfg=BN, act_cfg=ACT)
 
+    def _upsample_to(self, x, ref):
+        """bilinear 上采样到 ref 的空间尺寸"""
+        return resize(
+            x,
+            size=ref.shape[2:],
+            mode='bilinear',
+            align_corners=self.align_corners
+        )
 
     def _forward_feature(self, feats):
-        ppm_out = self.PPM(feats[3])
+        e3 = self.PPM(feats[3])
 
-        e3 = self.proj_out3(ppm_out)
+        e2 = self._upsample_to(self.proj_out3(e3), feats[2])  # 1/32 -> 1/16
+        e2 = self.spa_mab2(e2 + feats[2])
 
-        e2 = self.spa_mab2(nn.PixelShuffle(2)(e3))
-        e2 = e2 + feats[2]
-        e2 = self.proj_out2(e2)
+        e1 = self._upsample_to(self.proj_out2(e2), feats[1])
+        e1 = self.spa_mab1(e1 + feats[1])
 
-        e1 = self.spa_mab1(nn.PixelShuffle(2)(e2))
-        e1 = e1 + feats[1]
-        e1 = self.proj_out1(e1)
-
-        e0 = self.spa_mab0(nn.PixelShuffle(2)(e1))
-        e0 = e0 + feats[0]
+        e0 = self._upsample_to(self.proj_out1(e1), feats[0])
+        e0 = self.spa_mab0(e0 + feats[0])
         e0 = self.proj_final(e0)  #  W/4
 
         e1 = self.conv_p1(e1)  #  W/8

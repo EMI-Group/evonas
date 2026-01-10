@@ -4,6 +4,8 @@ set -e
 base_configs="SegmentNAS/configs/00_train/supernet_train_base_ade20k.txt"
 out_dir="./runs/ade20k/00_train/FT_supernet_ade20k"
 
+python SegmentNAS/train.py SegmentNAS/configs/00_train/ade20k_nokd_newfpn.txt
+
 # 00 maxnet
 python SegmentNAS/train.py "@${base_configs}" \
         --log_directory ${out_dir}/00_maxnet/  \
