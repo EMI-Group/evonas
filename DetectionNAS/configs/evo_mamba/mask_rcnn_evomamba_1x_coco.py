@@ -1,8 +1,8 @@
 _base_ = [
-    '_base_/models/mask_rcnn_r50_fpn.py',
-    '_base_/datasets/coco_instance.py',
-    '_base_/schedules/schedule_1x.py', 
-    '_base_/default_runtime.py'
+    '../_base_/models/mask_rcnn_r50_fpn.py',
+    '../_base_/datasets/coco_instance.py',
+    '../_base_/schedules/schedule_1x.py', 
+    '../_base_/default_runtime.py'
 ]
 # optimizer
 model = dict(
@@ -19,5 +19,5 @@ model = dict(
         out_channels=256,
         neck_type='sp'),
     )
-
+train_dataloader = dict(batch_size=2)
 

@@ -269,11 +269,6 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
     evaluator.dataset_meta = dataset_meta
 
     model_module = unwrap_model(model)
-    # for m in model_module.backbone.backbone.modules():
-    #     if isinstance(m, nn.BatchNorm2d):
-    #         m.eval()  # 切换到 eval 模式 -> 不再更新统计
-    #         m.weight.requires_grad = False  # 不更新 γ
-    #         m.bias.requires_grad = False    # 不更新 β:
             
     for m in model_module.modules():
         if isinstance(m, nn.ReLU):  # TODO
@@ -340,7 +335,12 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
     def hook_student_head(module, input, output):
         student_head_out['logits'] = output # UPerHead forward 输出的是 logits
 
-    handle_student = model_module.decode_head.conv_seg.register_forward_hook(hook_student_head)
+    if args.kd_ratio > 0:
+        handle_student = model_module.decode_head.conv_seg.register_forward_hook(hook_student_head)
+    
+    if args.f_distill:
+        t_module = unwrap_model(teacher_model)
+        handle_T = t_module.backbone.register_forward_hook(hook_fn_T)
 
     ################### train loop ########################
     model.train()
@@ -373,9 +373,7 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
         if args.kd_ratio > 0 or args.f_distill:
             with torch.no_grad():
                 teacher_model.eval()
-                with autocast(device_type='cuda', dtype=torch.float16, enabled=args.amp):
-                    t_module = unwrap_model(teacher_model)
-                    handle_T = t_module.backbone.register_forward_hook(hook_fn_T)
+                with autocast(device_type='cuda', dtype=torch.float16, enabled=args.amp):                    
                     # Pad 教师输入到 14 的倍数 (Swin Transformer 窗口要求)
                     t_inputs, (h_origin, w_origin) = pad_to_divisor_rb(batched['inputs'], divisor=14, pad_val=0.0)
                     # 构造临时的 Metas 给教师
@@ -397,8 +395,7 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
 
                 if args.f_distill:
                     feat_T_s4 = features.pop('feat_T_s4')  
-                
-                handle_T.remove()          
+                             
 
         for _ in range(args.dynamic_batch_size):
             with autocast(device_type='cuda', dtype=torch.float16, enabled=args.amp):
@@ -563,8 +560,11 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
             model.train()
             block_print()
             enable_print()
-
-    handle_student.remove()
+    
+    if args.kd_ratio > 0:
+        handle_student.remove()
+    if args.f_distill:
+        handle_T.remove() 
 
     if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
         writer.close()

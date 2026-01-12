@@ -107,6 +107,8 @@ pip install ftfy==6.3.1
 
 2026/1/9 update SuperNet Training (Add semantic segmentation head distillation)
 
+2026/1/12 update SuperNet Training (Add Mask R-CNN bbox head distillation)
+
 ------
 
 ##  Search Space

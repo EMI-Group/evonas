@@ -32,10 +32,16 @@ class FreqMaskingDistillLossv2(nn.Module):
         self.dis_freq = dis_freq
         self.self_query = self_query
 
-        self.projector_0 = AttentionProjector(student_dims, teacher_dims, pos_dims, window_shapes=window_shapes, self_query=self_query, softmax_scale=softmax_scale[0], num_heads=num_heads)
-        self.projector_1 = AttentionProjector(student_dims, teacher_dims, pos_dims, window_shapes=window_shapes, self_query=self_query, softmax_scale=softmax_scale[1], num_heads=num_heads)
-
-        
+        self.projector_0 = AttentionProjector(
+            student_dims, teacher_dims, pos_dims,
+            window_shapes=window_shapes, self_query=self_query,
+            softmax_scale=softmax_scale[0], num_heads=num_heads
+        )
+        self.projector_1 = AttentionProjector(
+            student_dims, teacher_dims, pos_dims,
+            window_shapes=window_shapes, self_query=self_query,
+            softmax_scale=softmax_scale[1], num_heads=num_heads
+        )
 
     def forward(self,
                 preds_S,
@@ -45,28 +51,18 @@ class FreqMaskingDistillLossv2(nn.Module):
                 ):
         """Forward function.
         Args:
-            preds_S(Tensor): Bs*C*H*W, student's feature map
-            preds_T(Tensor): Bs*C*H*W, teacher's feature map
+            preds_S(Tensor): Bs*C*Hs*Ws, student's feature map
+            preds_T(Tensor): Bs*C*Ht*Wt, teacher's feature map (Ht,Wt 动态)
         """
 
-        preds_S_spat =  self.project_feat_spat(preds_S, query=query_s)
-        preds_S_freq =  self.project_feat_freq(preds_S, query=query_f)
+        # [改动点2] projector 需要知道 teacher 的 Ht,Wt，从 preds_T 实时取
+        preds_S_spat = self.projector_0(preds_S, preds_T, query=query_s)
+        preds_S_freq = self.projector_1(preds_S, preds_T, query=query_f)
 
         spat_loss = self.get_spat_loss(preds_S_spat, preds_T)
         freq_loss = self.get_freq_loss(preds_S_freq, preds_T)
 
         return spat_loss, freq_loss
-
-    def project_feat_spat(self, preds_S, query=None):
-        preds_S = self.projector_0(preds_S, query=query)
-
-        return preds_S
-
-    def project_feat_freq(self, preds_S, query=None):
-        preds_S = self.projector_1(preds_S, query=query)
-
-        return preds_S
-
 
     def get_spat_loss(self, preds_S, preds_T):
         loss_mse = nn.MSELoss(reduction='sum')
@@ -112,8 +108,8 @@ class FreqMaskingDistillLossv2(nn.Module):
         dis_loss = dis_loss * self.alpha[1]
 
         return dis_loss
-
-
+    
+    
     def init_weights(self):
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
@@ -138,10 +134,10 @@ class AttentionProjector(nn.Module):
                  self_query=True,
                  softmax_scale=1.,
                  num_heads=8,
+                 base_hw=(58, 96),   # 可调：建议 >= 你常见最大Ht/Wt, (58, 96) for COCO 800x1333 input
                  ):
         super(AttentionProjector, self).__init__()
 
-        # self.hw_dims = hw_dims
         self.student_dims = student_dims
         self.teacher_dims = teacher_dims
 
@@ -153,46 +149,53 @@ class AttentionProjector(nn.Module):
                                       nn.BatchNorm2d(student_dims),
                                       nn.ReLU())
 
-        # self.pos_embed = nn.Parameter(torch.zeros(1, student_dims, pos_hw[0], pos_hw[1]), requires_grad=True)
-        self.pos_embed = nn.Conv2d(student_dims, student_dims, 3, 1, 3 // 2, groups=student_dims)
+        self.pos_embed = PosOnlyQuery(pos_dims=student_dims, base_hw=(25,42))
         self.pos_attention = WindowMultiheadPosAttention(teacher_dims, num_heads=num_heads, input_dims=student_dims, pos_dims=pos_dims, window_shapes=window_shapes, softmax_scale=softmax_scale)
         self.ffn = FFN(embed_dims=teacher_dims, feedforward_channels=teacher_dims * 4)
 
         self.norm = nn.LayerNorm([teacher_dims])
 
         if self_query:
-            # self.query = nn.Embedding(hw_dims[0] * hw_dims[1], teacher_dims)
-            self.query = nn.Sequential(
-                nn.Conv2d(student_dims, student_dims, 3, 1, 3 // 2, groups=student_dims),
-                nn.Conv2d(student_dims, teacher_dims, 1)
-            )
+            self.query = PosOnlyQuery(pos_dims=pos_dims, base_hw=base_hw)
         else:
             self.query = None
 
-        # if self.pos_embed is not None:
-        #     trunc_normal_(self.pos_embed, std=0.02)
+    def forward(self, x, preds_T, query=None):
+        """
+        x: (B, student_dims, Hs, Ws)
+        preds_T: (B, teacher_dims, Ht, Wt) 只用于取 (Ht,Wt)
+        query: 可选，支持：
+          - (B, Ht*Wt, pos_dims) 或 (B, pos_dims, Ht, Wt)
+        return:
+          - fea_S: (B, Ht*Wt, teacher_dims)
+        """
+        _, _, Ht, Wt = preds_T.shape
+        B, _, Hs, Ws = x.shape
+
+        pos_emb = self.query(B, Ht, Wt, x.device, x.dtype)  # (B, pos_dims, Ht, Wt)
 
 
-    def forward(self, x, query=None):
-        # H, W = self.hw_dims
-        # N = x.shape[0]
-        N, _, H, W = x.shape
-
-        if query is not None:
-            pos_emb = query.permute(0,2,1).reshape(N, -1, H, W).contiguous()
-        elif self.query is not None:
-            pos_emb = self.query(x)
-        else:
-            raise NotImplementedError("There is no query!")
-
-        preds_S = self.proj_student(x) + self.pos_embed(x)
-        # pos_emb = self.proj_pos(pos_emb)  # directly use conv to get pos emb
+        preds_S = self.proj_student(x) + self.pos_embed(B, Hs, Ws, x.device, x.dtype)
+        pos_emb = self.proj_pos(pos_emb)
         pos_emb = torch.flatten(pos_emb.permute(0, 2, 3, 1), 1, 2)
 
-        fea_S = self.pos_attention(torch.flatten(preds_S.permute(0, 2, 3, 1), 1, 2), pos_emb)
+        fea_S = self.pos_attention(torch.flatten(preds_S.permute(0, 2, 3, 1), 1, 2), pos_emb)  # 前者需要学生尺度，后者需要教师尺度
         fea_S = self.ffn(self.norm(fea_S))
 
         return fea_S
+
+
+class PosOnlyQuery(nn.Module):
+    def __init__(self, pos_dims, base_hw=(32, 32)):
+        super().__init__()
+        Hb, Wb = base_hw
+        self.grid = nn.Parameter(torch.zeros(1, pos_dims, Hb, Wb))
+        trunc_normal_(self.grid, std=0.02)
+
+    def forward(self, B, Ht, Wt, device, dtype):
+        pos = F.interpolate(self.grid.to(device=device, dtype=dtype),
+                            size=(Ht, Wt), mode="bilinear", align_corners=False)
+        return pos.repeat(B, 1, 1, 1)  # (B, pos_dims, Ht, Wt)
 
 
 class DCT():
@@ -296,16 +299,3 @@ class DCT():
         X1 = self.inverse_transform_h(x)
         X2 = self.inverse_transform_w(X1.transpose(-1, -2))
         return X2.transpose(-1, -2)
-    
-
-class ResDWC(nn.Module):
-    def __init__(self, dim, kernel_size=3):
-        super().__init__()
-        self.dim = dim
-        self.kernel_size = kernel_size
-        self.conv = nn.Conv2d(dim, dim, kernel_size, 1, kernel_size // 2, groups=dim)
-
-
-    def forward(self, x):
-        return F.conv2d(x, self.conv.weight, self.conv.bias, stride=1,
-                        padding=self.kernel_size // 2, groups=self.dim)

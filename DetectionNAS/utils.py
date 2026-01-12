@@ -5,6 +5,7 @@ from torch.utils.data import Sampler
 from torchvision import transforms
 from timm.utils import ModelEma as ModelEma
 from ast import literal_eval
+import torch.nn.functional as F
 
 import os, sys
 import numpy as np
@@ -420,6 +421,12 @@ def check_keywords_in_name(name, keywords=()):
     return isin
 
 
+def barrier():
+    if dist.is_available() and dist.is_initialized():
+        torch.cuda.synchronize()
+        dist.barrier()
+
+
 def set_weight_decay(model, skip_list=(), skip_keywords=()):
     has_decay = []
     no_decay = []
@@ -438,50 +445,79 @@ def set_weight_decay(model, skip_list=(), skip_keywords=()):
     return [{'params': has_decay},
             {'params': no_decay, 'weight_decay': 0.}], no_decay_names 
 
-
-def barrier():
-    if dist.is_available() and dist.is_initialized():
-        torch.cuda.synchronize()
-        dist.barrier()
-
         
+_CUSTOM_NO_DECAY_KEYS = ("absolute_pos_embed", "relative_position_bias_table", "norm")
+
+def set_weight_decay_paramwise_custom_keys(model, weight_decay: float,
+                                          custom_no_decay_keys=("absolute_pos_embed",
+                                                               "relative_position_bias_table",
+                                                               "norm")):
+    """
+    Create 2 param groups:
+      - decay group: weight_decay = weight_decay
+      - no_decay group: weight_decay = 0.0 if name contains any custom_no_decay_keys
+    """
+    has_decay, no_decay = [], []
+    no_decay_names = []
+
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+
+        if any(k in name for k in custom_no_decay_keys):
+            no_decay.append(param)
+            no_decay_names.append(name)
+        else:
+            has_decay.append(param)
+
+    param_groups = []
+    if has_decay:
+        param_groups.append({"params": has_decay, "weight_decay": weight_decay})
+    if no_decay:
+        param_groups.append({"params": no_decay, "weight_decay": 0.0})
+
+    return param_groups, no_decay_names
+
+
 def build_optimizer(args, model, logger, dis_modules_s4):
     """
-    Build optimizer, set weight decay of normalization to 0 by default.
-    code from VSSD
+      - absolute_pos_embed: weight_decay = 0
+      - relative_position_bias_table: weight_decay = 0
+      - norm: weight_decay = 0
     """
     logger.info(f"==============> building optimizer {args.optimizer}....................")
-    skip = {}
-    skip_keywords = {}
-    if hasattr(model, 'no_weight_decay'):
-        skip = model.no_weight_decay()
-    if hasattr(model, 'no_weight_decay_keywords'):
-        skip_keywords = model.no_weight_decay_keywords()
-    parameters, no_decay_names = set_weight_decay(model, skip, skip_keywords)
-    logger.info(f"No weight decay list: {no_decay_names}")
 
-    # bb = set(model.backbone.parameters())
-    # for g in parameters:
-    #     g["params"] = [p for p in g["params"] if p not in bb]
-    # parameters = [g for g in parameters if g["params"]]
-    # parameters.append(
-    #     {"params": list(bb), "lr": args.learning_rate * 0.1}
-    # )
+    param_groups, no_decay_names = set_weight_decay_paramwise_custom_keys(
+        model=model,
+        weight_decay=args.weight_decay,
+        custom_no_decay_keys=_CUSTOM_NO_DECAY_KEYS,
+    )
+    logger.info(f"No weight decay list (custom_keys matched): {no_decay_names}")
 
+    # optional extra params (e.g. distillation modules)
     if dis_modules_s4 is not None:
-        parameters.append(
-            {'params': dis_modules_s4.parameters(), 'lr': args.learning_rate * 0.5}
-        )
+        param_groups.append({
+            "params": dis_modules_s4.parameters(),
+            "lr": args.learning_rate * 0.5,
+            # 不写 weight_decay => 继承 optimizer 默认 args.weight_decay
+        })
 
-    optimizer = None
-    if args.optimizer == 'sgd':
-        optimizer = torch.optim.SGD(parameters, momentum=0.9, nesterov=True,
-                              lr=args.learning_rate, weight_decay=args.weight_decay)
-    elif args.optimizer == 'adamw':
-        optimizer = torch.optim.AdamW(parameters,
-                                lr=args.learning_rate, weight_decay=args.weight_decay)
+    if args.optimizer == "sgd":
+        optimizer = torch.optim.SGD(
+            param_groups,
+            lr=args.learning_rate,
+            momentum=0.9,
+            nesterov=True,
+            weight_decay=args.weight_decay,
+        )
+    elif args.optimizer == "adamw":
+        optimizer = torch.optim.AdamW(
+            param_groups,
+            lr=args.learning_rate,
+            weight_decay=args.weight_decay,
+        )
     else:
-        raise NotImplementedError
+        raise NotImplementedError(f"Unknown optimizer: {args.optimizer}")
 
     return optimizer
 
@@ -512,3 +548,11 @@ def build_iter_lambda_scheduler(optimizer, *,
         return factor
 
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
+
+def pad_to_divisor_rb(x, divisor=14, pad_val=0.0):
+    """right/bottom pad到divisor倍数；返回pad后的x以及pad前(H,W)"""
+    B, C, H, W = x.shape
+    newH = (H + divisor - 1) // divisor * divisor
+    newW = (W + divisor - 1) // divisor * divisor
+    x_pad = F.pad(x, (0, newW - W, 0, newH - H), value=pad_val)
+    return x_pad, (H, W)

@@ -19,7 +19,8 @@ from timm.scheduler.cosine_lr import CosineLRScheduler
 from tensorboardX import SummaryWriter
 
 from utils import barrier, block_print, enable_print, build_optimizer, \
-                       convert_arg_line_to_args, get_root_logger, unwrap_model, str2list
+                       convert_arg_line_to_args, get_root_logger, unwrap_model, str2list, \
+                       pad_to_divisor_rb
 from DetectionNAS.networks import model
 from search_space import MambaSearchSpace
 from torch.amp import autocast, GradScaler
@@ -30,6 +31,7 @@ from mmdet.registry import MODELS, METRICS
 from mmengine.evaluator import Evaluator
 from torch.utils.data import DataLoader
 from contextlib import nullcontext
+from distillation.rois import build_targets_from_rois, kd_cls_soft_ce, kd_reg_teacher_bounded
 
 from mmengine.registry import init_default_scope
 init_default_scope('mmdet')
@@ -41,7 +43,7 @@ register_all_modules(init_default_scope=True)
 '''fine-tune supernet on object dataset, e.g. COCO'''
 
 ### develop
-# python DetectionNAS/train.py DetectionNAS/configs/coco_nas_kd.txt 
+# python DetectionNAS/train.py DetectionNAS/configs/coco_debug.txt
 
 ### final
 # sh scripts/detection/supernet_steptrain.sh
@@ -67,6 +69,7 @@ def parse_args():
 
     # Knowledge distillation
     parser.add_argument('--kd_ratio',                  type=float,   help='the ratio of knowledge distillation', default=0)
+    parser.add_argument('--teacher_ckpt',              type=str,     help='the path of teacher checkpoint')
     parser.add_argument('--f_distill',                 action='store_true',   help='if set, will use mid feature distillation loss')
     parser.add_argument('--alpha_1',                   type=float, help='weight coefficient for spatial loss (spat_loss)', default=0.08)
     parser.add_argument('--alpha_2',                   type=float, help='weight coefficient for frequency loss (freq_loss)', default=0.06)
@@ -121,7 +124,7 @@ def online_eval(args, model, dataloader_eval, evaluator=None, logger=None, ss=No
         # random sample subnet
         sample_config = ss.sample(n_samples=1)[0]
         model_module = unwrap_model(model)
-        model_module.backbone.backbone.set_sample_config(sample_config=sample_config)  # TODO
+        model_module.backbone.backbone.set_sample_config(sample_config=sample_config)
         with mautocast(enabled=args.amp):
             preds = model_module.val_step(eval_sample_batched)
         evaluator.process(data_samples=preds, data_batch=eval_sample_batched)
@@ -144,12 +147,10 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
 
     # get logger after init DDP
     logger = get_root_logger(args.log_directory)
-    
-    if args.gpu is not None:
-        logger.info("== Use GPU: {} for training".format(args.gpu))
 
     if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
-        logger.info('args: '+str(args))
+        logger.info("===== Args Begin =====\n%s\n===== Args End =====", vars(args))
+        logger.info("===== Config Begin =====\n%s\n===== Config End =====", cfg.pretty_text)
 
     # model = MambaDepth(args, version=args.encoder, inv_depth=False, max_depth=args.max_depth, pretrained=args.pretrain, remap=args.remap)
     model = MODELS.build(cfg.model)
@@ -163,15 +164,15 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
     if args.kd_ratio > 0 or args.f_distill:
         t_cfg = Config.fromfile(args.teacher_config)
         teacher_model = MODELS.build(t_cfg.model)
-        load_checkpoint(teacher_model, './checkpoints/cascade_mask_rcnn_convnext-s_p4_w7_fpn_giou_4conv1f_fp16_ms-crop_3x_coco_20220510_201004-3d24f5a4.pth', map_location='cpu', strict=True)
+        load_checkpoint(teacher_model, args.teacher_ckpt, map_location='cpu', strict=True)
         logger.info("Successed loading weights for teacher model")
     
     from distillation.fmdv2 import FreqMaskingDistillLossv2
     dis_modules_s4 = FreqMaskingDistillLossv2(
         alpha=[args.alpha_1, args.alpha_2],
         student_dims=512, # student feature dimension
-        teacher_dims=768,  # teacher feature dimension
-        pos_dims=768,  # same to teacher_dims
+        teacher_dims=1024,  # teacher feature dimension
+        pos_dims=1024,  # same to teacher_dims
         self_query=True,
         softmax_scale=[5.,5.],
         num_heads=16
@@ -324,18 +325,40 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
     #     gamma=0.1
     # )
 
-    # with open('./detection_model_nas.log', 'w') as f:
-    #     f.write(str(model))
+    # with open('./detection_model_Teacher.log', 'w') as f:
+    #     f.write(str(teacher_model))
     # assert False,'debug'
 
     features = {}
+    student_head_out = {}
+
     def hook_fn_S(module, input, output):
         features['feat_S_s4'] = output[3]
     def hook_fn_T(module, input, output):
         features['feat_T_s4'] = output[3]
+    
+    def prehook_rois(module, inputs):
+        rois = inputs[1]
+        student_head_out['rois'] = rois
+    def hook_bbox_head_s(module, inputs, outputs):
+        if isinstance(outputs, (tuple, list)) and len(outputs) == 2:
+            cls_score, bbox_pred = outputs
+        else:
+            raise TypeError(f"Unexpected bbox_head outputs: {type(outputs)}")
+        student_head_out['cls_s'] = cls_score
+        student_head_out['reg_s'] = bbox_pred
 
-    if args.arch_pool:
-        arch_pool = ArchitecturePool(pool_size=3)
+    if args.kd_ratio > 0:
+        model_module = unwrap_model(model)
+        h_rois = model_module.roi_head.bbox_roi_extractor.register_forward_pre_hook(prehook_rois)
+        h_bbox_s = model_module.roi_head.bbox_head.register_forward_hook(hook_bbox_head_s)
+
+    if args.f_distill:
+        t_module = unwrap_model(teacher_model)
+        handle_T = t_module.backbone.register_forward_hook(hook_fn_T)
+
+    # if args.arch_pool:
+    #     arch_pool = ArchitecturePool(pool_size=3)
 
     ################### train loop ########################
     model.train()
@@ -352,15 +375,15 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
             before_op_time = time.time()
             global_step += 1
 
+            model_module = unwrap_model(model)
+            batched = model_module.data_preprocessor(sample_batched, True)
+
             if args.kd_ratio > 0 or args.f_distill:
                 with torch.no_grad():
                     teacher_model.eval()
                     with autocast(device_type='cuda', dtype=torch.float16, enabled=args.amp):
-                        model_module = unwrap_model(teacher_model)
-                        handle_T = model_module.backbone.register_forward_hook(hook_fn_T)
-                        # tearcher_preds = model_module.val_step(sample_batched)
-                        batched = model_module.data_preprocessor(sample_batched, False)
-                        model_module.extract_feat(batched["inputs"])  # 输出的是FPN之后的结果
+                        t_inputs, (h_origin, w_origin) = pad_to_divisor_rb(batched['inputs'], divisor=14, pad_val=0.0)
+                        x_t = t_module.extract_feat(t_inputs)  # 输出的是FPN之后的结果
                     if args.f_distill:
                         feat_T_s4 = features.pop('feat_T_s4')
 
@@ -373,18 +396,10 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
                         sample_config = ss.sample(n_samples=1)[0]
                         model_module = unwrap_model(model)
                         model_module.backbone.backbone.set_sample_config(sample_config=sample_config)
-                        batched = model_module.data_preprocessor(sample_batched, True)
                         if args.f_distill:
-                            # handle_S = model_module.backbone.layer4.register_forward_hook(hook_fn_S)  # for resnet50
                             handle_S = model_module.backbone.register_forward_hook(hook_fn_S)
 
-                        if isinstance(batched, dict):
-                            losses = model(**batched, mode='loss')
-                        elif isinstance(batched, (list, tuple)):
-                            losses = model(*batched, mode='loss')
-                        else:
-                            raise TypeError(f'Output of data_preprocessor must be dict/tuple/list, got {type(batched)}')
-
+                        losses = model(**batched, mode='loss')
                         loss, log_vars = model_module.parse_losses(losses)
                         # log_vars: {'loss_cls':0.8, 'loss_bbox':0.6, 'loss_mask':0.4, 'loss':1.8}
                     
@@ -392,61 +407,40 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
                         spat_loss = torch.tensor(0.0).cuda(args.gpu)
                         freq_loss = torch.tensor(0.0).cuda(args.gpu)
                         kd_loss = torch.tensor(0.0).cuda(args.gpu)
+                        
+                        if args.kd_ratio > 0:
+                            # 1) 从 hook 拿 student 的 rois + head 输出
+                            rois = student_head_out.pop('rois')    # shape: (1024, 5)
+                            cls_s = student_head_out.pop('cls_s')  # shape: (1024, 81)
+                            reg_s = student_head_out.pop('reg_s')  # shape: (1024, 320)
+                            # 2) teacher 在同一 rois 上跑 bbox head（不需要 teacher hook）
+                            with torch.no_grad():
+                                with autocast(device_type='cuda', dtype=torch.float16, enabled=args.amp):
+                                    bbox_res_t = t_module.roi_head._bbox_forward(x_t, rois)
+                                    cls_t = bbox_res_t['cls_score']
+                                    reg_t = bbox_res_t['bbox_pred']
+                            # 3) 外部生成 targets
+                            labels, bbox_targets, pos_mask = build_targets_from_rois(model_module, rois, batched['data_samples'])
+                            # 4) 计算 KD loss（论文思路：soft CE + bounded reg）
+                            num_classes = model_module.roi_head.bbox_head.num_classes
+                            reg_class_agnostic = getattr(model_module.roi_head.bbox_head, 'reg_class_agnostic', False)
+
+                            loss_kd_cls = kd_cls_soft_ce(cls_s, cls_t, bg_weight=1.5)
+                            loss_kd_reg = kd_reg_teacher_bounded(
+                                reg_s, reg_t, bbox_targets, pos_mask, labels,
+                                num_classes=num_classes, reg_class_agnostic=reg_class_agnostic,
+                                margin=0.0, nu=0.5
+                            )
+
+                            kd_loss = loss_kd_cls + loss_kd_reg
 
                         if args.f_distill:
                             feat_S_s4 = features.pop('feat_S_s4')
 
-                            # # 检查类型是否为 list 或 tuple
-                            # if isinstance(feat_T_s4, (list, tuple)):
-                            #     print(f"[Teacher] feat_T_s4 has {len(feat_T_s4)} feature maps")
-                            #     for i, f in enumerate(feat_T_s4):
-                            #         print(f"  [Teacher-{i}] type={type(f)}, shape={tuple(f.shape)}")
-                            # else:
-                            #     print(f"[Teacher] single tensor, shape={tuple(feat_T_s4.shape)}")
-                            # if isinstance(feat_S_s4, (list, tuple)):
-                            #     print(f"[Student] feat_S_s4 has {len(feat_S_s4)} feature maps")
-                            #     for i, f in enumerate(feat_S_s4):
-                            #         print(f"  [Student-{i}] type={type(f)}, shape={tuple(f.shape)}")
-                            # else:
-                            #     print(f"[Student] single tensor, shape={tuple(feat_S_s4.shape)}")
-                            # assert False, 'check shape'
-
-                            # [Teacher] feat_T_s4 has 4 feature maps
-                            # [Teacher-3] type=<class 'torch.Tensor'>, shape=(1, 768, 24, 42)
-                            # [Student] single tensor, shape=(1, 2048, 24, 42)
-
-                            # [Teacher] single tensor, shape=(1, 768, 24, 42)
-                            # [Student] single tensor, shape=(1, 512, 24, 42)
-
                             spat_loss, freq_loss = dis_modules_s4(feat_S_s4, feat_T_s4)
-                            
-                            warmup = min(1.0, global_step / (0.05 * num_total_steps))  # 5% steps warmup，可改0.1
-                            w_ratio = warmup * (0.2 + 0.8 * (1 - global_step / num_total_steps))
-                            spat_loss = w_ratio * spat_loss
-                            freq_loss = w_ratio * freq_loss
-                            
-                            handle_T.remove()
                             handle_S.remove()
 
-                        if args.kd_ratio > 0 or args.f_distill:
-                            loss = (1 - args.kd_ratio) * loss + args.kd_ratio * kd_loss + spat_loss + freq_loss
-
-                        if args.arch_pool:  # For comparison of methods from One-Shot Neural Architecture Search: Maximising Diversity to Overcome Catastrophic Forgetting
-                            mean_losses = torch.tensor(0.0).cuda(args.gpu)
-                            cur_code = ss.encode(sample_config)
-                            if len(arch_pool.pool) == arch_pool.pool_size:   
-                                total_loss = 0.0
-                                # pool branches
-                                with torch.no_grad():
-                                    for arch_code in arch_pool.pool:
-                                        model_module.backbone.backbone.set_sample_config(sample_config=ss.decode(arch_code))
-                                        p_losses = model(**batched, mode='loss')
-                                        p_loss, _ = model_module.parse_losses(p_losses)
-                                        total_loss += p_loss
-                                        # print(f"  ├─ pool_arch[{arch_code}] 的 loss = {p_loss.item():.4f}")
-                                mean_losses = total_loss / len(arch_pool.pool)
-                            arch_pool.add_architecture(cur_code)
-                            loss = 0.8 * loss + 0.2 * mean_losses
+                        loss = (1 - args.kd_ratio) * loss + args.kd_ratio * kd_loss + spat_loss + freq_loss
                         
                         loss = loss / args.dynamic_batch_size
                         loss_log = loss.detach()
@@ -475,7 +469,7 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
 
             scheduler.step()
             current_lr = optimizer.param_groups[0]['lr']
-            current_lr_kd = optimizer.param_groups[1]['lr'] if args.f_distill else 0
+            current_lr_kd = optimizer.param_groups[-1]['lr'] if args.f_distill else 0
 
             # show log and save result
             if global_step % 100 == 0:
@@ -568,7 +562,14 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
             enable_print()
 
         epoch += 1
-       
+    
+    if args.kd_ratio > 0:
+        h_rois.remove()
+        h_bbox_s.remove()
+
+    if args.f_distill:
+        handle_T.remove() 
+
     if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
         writer.close()
         if args.do_online_eval:

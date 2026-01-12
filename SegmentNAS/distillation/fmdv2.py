@@ -10,6 +10,9 @@ from mmcv.cnn.bricks.transformer import FFN
 
 '''
 code from ScaleKD
+https://github.com/deep-optimization/ScaleKD
+
+change pos_embed function by Yu Zhihao
 '''
 class FreqMaskingDistillLossv2(nn.Module):
 
