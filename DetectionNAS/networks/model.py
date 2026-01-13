@@ -1,3 +1,4 @@
+import warnings
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -10,7 +11,10 @@ from .SpaMamba.spatialmamba import SpatialMambaLayer
 
 from mmdet.registry import MODELS
 from mmengine.model import BaseModule
+from mmcv.cnn import ConvModule
 ########################################################################################################################
+BN = dict(type='SyncBN', requires_grad=True)
+ACT = dict(type='ReLU', inplace=True)
 
 @MODELS.register_module()
 class MambaDetection(nn.Module):
@@ -144,43 +148,51 @@ class MambaDetection(nn.Module):
 
 @MODELS.register_module()
 class MambaFPN(nn.Module):
-    def __init__(self, in_channels, out_channels, neck_type='sp', **kwargs):
+    def __init__(self, in_channels, out_channels, **kwargs):
         super().__init__()
+        # PSP Module
+        self.PPM = nn.Sequential(StripPooling(in_channels[3], (20,12)),
+                                StripPooling(in_channels[3], (20,12)))
 
         ### decoder
         depths = [1,1,1,1]
 
-        self.spa_mab3 = SpatialMambaLayer(dim=in_channels[3], depth=depths[0], d_state=1, mlp_ratio=4.0)
-        self.spa_mab2 = SpatialMambaLayer(dim=in_channels[2], depth=depths[1], d_state=1, mlp_ratio=4.0)
-        self.spa_mab1 = SpatialMambaLayer(dim=in_channels[1], depth=depths[2], d_state=1, mlp_ratio=4.0)
-        self.spa_mab0 = SpatialMambaLayer(dim=in_channels[0], depth=depths[3], d_state=1, mlp_ratio=4.0)
+        # self.spa_mab3 = SpatialMambaLayer(dim=in_channels[3], depth=depths[0], d_state=1)
+        self.spa_mab2 = SpatialMambaLayer(dim=in_channels[2], depth=depths[1], d_state=1)
+        self.spa_mab1 = SpatialMambaLayer(dim=in_channels[1], depth=depths[2], d_state=1)
+        self.spa_mab0 = SpatialMambaLayer(dim=in_channels[0], depth=depths[3], d_state=1)
 
-        self.proj_out3 = nn.Conv2d(in_channels[3], in_channels[3]*2, kernel_size=3, stride=1, padding=1)
-        self.proj_out2 = nn.Conv2d(in_channels[2], in_channels[2]*2, kernel_size=3, stride=1, padding=1)
-        self.proj_out1 = nn.Conv2d(in_channels[1], in_channels[1]*2, kernel_size=3, stride=1, padding=1)
-        self.proj_final = nn.Conv2d(in_channels[0], out_channels, kernel_size=3, stride=1, padding=0)
+        self.proj_out3 = ConvModule(in_channels[3], in_channels[3] // 2, kernel_size=1, norm_cfg=BN, act_cfg=ACT)
+        self.proj_out2 = ConvModule(in_channels[2], in_channels[2] // 2, kernel_size=1, norm_cfg=BN, act_cfg=ACT)
+        self.proj_out1 = ConvModule(in_channels[1], in_channels[1] // 2, kernel_size=1, norm_cfg=BN, act_cfg=ACT)
+        self.proj_final = ConvModule(in_channels[0], out_channels, kernel_size=3, padding=1, norm_cfg=BN, act_cfg=ACT)
             
-        self.conv_p3 = nn.Conv2d(in_channels[3]*2, out_channels, kernel_size=1)
-        self.conv_p2 = nn.Conv2d(in_channels[2]*2, out_channels, kernel_size=1)
-        self.conv_p1 = nn.Conv2d(in_channels[1]*2, out_channels, kernel_size=1)
+        self.conv_p3 = ConvModule(in_channels[3], out_channels, 3, padding=1, norm_cfg=BN, act_cfg=ACT)
+        self.conv_p2 = ConvModule(in_channels[2], out_channels, 3, padding=1, norm_cfg=BN, act_cfg=ACT)
+        self.conv_p1 = ConvModule(in_channels[1], out_channels, 3, padding=1, norm_cfg=BN, act_cfg=ACT)
 
         self.max_pool = nn.MaxPool2d(kernel_size=1, stride=2)
-    
+
+    def _upsample_to(self, x, ref):
+        """bilinear 上采样到 ref 的空间尺寸"""
+        return resize(
+            x,
+            size=ref.shape[2:],
+            mode='bilinear',
+            align_corners=False
+        )    
 
     def forward(self, feats):
-        e3 = self.spa_mab3(feats[3])
-        e3 = self.proj_out3(e3)
+        e3 = self.PPM(feats[3])
+        
+        e2 = self._upsample_to(self.proj_out3(e3), feats[2])
+        e2 = self.spa_mab2(e2 + feats[2])
 
-        e2 = self.spa_mab2(nn.PixelShuffle(2)(e3))
-        e2 = e2 + feats[2]
-        e2 = self.proj_out2(e2)
+        e1 = self._upsample_to(self.proj_out2(e2), feats[1])
+        e1 = self.spa_mab1(e1 + feats[1])
 
-        e1 = self.spa_mab1(nn.PixelShuffle(2)(e2))
-        e1 = e1 + feats[1]
-        e1 = self.proj_out1(e1)
-
-        e0 = self.spa_mab0(nn.PixelShuffle(2)(e1))
-        e0 = e0 + feats[0]
+        e0 = self._upsample_to(self.proj_out1(e1), feats[0])
+        e0 = self.spa_mab0(e0 + feats[0])
         e0 = self.proj_final(e0)  #  W/4
 
         e1 = self.conv_p1(e1)  #  W/8
@@ -191,12 +203,6 @@ class MambaFPN(nn.Module):
         out = (e0, e1, e2, e3, ee)
 
         return out
-
-
-def upsample(x, scale_factor=2, mode="bilinear", align_corners=False):
-    """Upsample input tensor by a factor of 2
-    """
-    return F.interpolate(x, scale_factor=scale_factor, mode=mode, align_corners=align_corners)
 
 
 def make_divisible(value: int, divisor: int = 8, min_value: Optional[int] = None) -> int:
@@ -212,3 +218,25 @@ def make_divisible(value: int, divisor: int = 8, min_value: Optional[int] = None
     if new_value < 0.9 * value:
         new_value += divisor
     return int(new_value)
+
+
+def resize(input,
+           size=None,
+           scale_factor=None,
+           mode='nearest',
+           align_corners=None,
+           warning=True):
+    if warning:
+        if size is not None and align_corners:
+            input_h, input_w = tuple(int(x) for x in input.shape[2:])
+            output_h, output_w = tuple(int(x) for x in size)
+            if output_h > input_h or output_w > output_h:
+                if ((output_h > 1 and output_w > 1 and input_h > 1
+                     and input_w > 1) and (output_h - 1) % (input_h - 1)
+                        and (output_w - 1) % (input_w - 1)):
+                    warnings.warn(
+                        f'When align_corners={align_corners}, '
+                        'the output would more aligned if '
+                        f'input size {(input_h, input_w)} is `x+1` and '
+                        f'out size {(output_h, output_w)} is `nx+1`')
+    return F.interpolate(input, size, scale_factor, mode, align_corners)

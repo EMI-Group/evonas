@@ -1,5 +1,4 @@
-DetectionNAS/configs/evo_mamba/mask_rcnn_evomamba_normal_fpn_1x_coco.py
-DetectionNAS/configs/dinov2/depth_anything_large_mask-rcnn_coco.py
+DetectionNAS/configs/evo_mamba/mask_rcnn_evomamba_1x_coco.py
 --model_name MambaDetection
 --encoder SuperNet
 --optimizer adamw
@@ -20,8 +19,5 @@ DetectionNAS/configs/dinov2/depth_anything_large_mask-rcnn_coco.py
 --ssd_expand "[4]"
 
 --dynamic_batch_size 1
---kd_ratio 0.5
---f_distill
---alpha_1 0.0003
---alpha_2 0.0002
+--kd_ratio 0.0
 --amp

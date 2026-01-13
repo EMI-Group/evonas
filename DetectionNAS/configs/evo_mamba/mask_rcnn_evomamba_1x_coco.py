@@ -16,8 +16,7 @@ model = dict(
     neck=dict(
         type='MambaFPN',
         in_channels=[64, 128, 256, 512],
-        out_channels=256,
-        neck_type='sp'),
+        out_channels=256),
     )
 train_dataloader = dict(batch_size=2)
 
