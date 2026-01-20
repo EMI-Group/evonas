@@ -65,7 +65,7 @@ class FreqMaskingDistillLossv2(nn.Module):
         return spat_loss, freq_loss
 
     def get_spat_loss(self, preds_S, preds_T):
-        loss_mse = nn.MSELoss(reduction='sum')
+        loss_mse = nn.MSELoss(reduction='mean')
 
         N = preds_S.shape[0]
         N, C, H, W = preds_T.shape
@@ -83,7 +83,7 @@ class FreqMaskingDistillLossv2(nn.Module):
 
 
     def get_freq_loss(self, preds_S, preds_T):
-        loss_mse = nn.MSELoss(reduction='sum')
+        loss_mse = nn.MSELoss(reduction='mean')
         N, C, H, W = preds_T.shape
         device = preds_S.device
 
@@ -91,19 +91,28 @@ class FreqMaskingDistillLossv2(nn.Module):
 
         preds_S = preds_S.permute(0,2,1).contiguous().view(*preds_T.shape)
 
-        preds_S_freq = dct.forward(preds_S)
-        preds_T_freq = dct.forward(preds_T)
+        # def check(name, x):
+        #     if not torch.isfinite(x).all():
+        #         bad = (~torch.isfinite(x)).float().mean().item()
+        #         print(f"[NaN/Inf] {name}: bad_ratio={bad}, dtype={x.dtype}, min={x.min().item()}, max={x.max().item()}")
+        #         raise RuntimeError(name)
 
-        preds_S_freq[:,:,0,0]=0
-        preds_T_freq[:,:,0,0]=0
+        with torch.cuda.amp.autocast(enabled=False):
+            preds_S_freq = dct.forward(preds_S)
+            preds_T_freq = dct.forward(preds_T)
+            # check("preds_S_freq", preds_S_freq)
+            # check("preds_T_freq", preds_T_freq)
 
-        preds_S = dct.inverse(preds_S_freq)
-        preds_T = dct.inverse(preds_T_freq)
+            preds_S_freq[:,:,0,0]=0
+            preds_T_freq[:,:,0,0]=0
 
-        preds_S = F.normalize(preds_S, dim=1, p=2)
-        preds_T = F.normalize(preds_T, dim=1, p=2)
+            preds_S = dct.inverse(preds_S_freq)
+            preds_T = dct.inverse(preds_T_freq)
 
-        dis_loss = loss_mse(preds_S, preds_T)/N
+            preds_S = F.normalize(preds_S, dim=1, p=2)
+            preds_T = F.normalize(preds_T, dim=1, p=2)
+
+            dis_loss = loss_mse(preds_S, preds_T)/N
 
         dis_loss = dis_loss * self.alpha[1]
 

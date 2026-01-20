@@ -11,11 +11,11 @@ class DINOv2(nn.Module):
     """Use DINOv2 pre-trained models
     """
 
-    def __init__(self, version='large', freeze=False, load_from=None, use_adapters=False):
+    def __init__(self, version='large', freeze=False, load_from=None, use_adapters=False, unfreeze_last_blocks=False, drop_path_rate=0.0):
         super().__init__()
-        
+
         if version == 'large':
-            self.dinov2 = torch.hub.load('DetectionNAS/networks/depth_anything/torchhub/facebookresearch_dinov2_main', 'dinov2_vitl14', source='local', pretrained=True)
+            self.dinov2 = torch.hub.load('DetectionNAS/networks/depth_anything/torchhub/facebookresearch_dinov2_main', 'dinov2_vitl14', source='local', pretrained=True, drop_path_rate=drop_path_rate)
         else:
             raise NotImplementedError
 
@@ -28,9 +28,17 @@ class DINOv2(nn.Module):
             self.dinov2.load_state_dict(new_d)
         
         self.freeze = freeze
+        self.unfreeze_last_blocks = unfreeze_last_blocks
+        
         if self.freeze:
             for p in self.dinov2.parameters():
                 p.requires_grad_(False)
+
+            if self.unfreeze_last_blocks:  # 只解冻最后一层
+                for p in self.dinov2.blocks[-1].parameters():
+                    p.requires_grad_(True)
+                for p in self.dinov2.norm.parameters():
+                    p.requires_grad_(True)
 
         self.use_adapters = use_adapters
         if self.use_adapters:
@@ -45,7 +53,7 @@ class DINOv2(nn.Module):
     def forward(self, inputs):
         B, _, h, w = inputs.shape
         
-        if self.freeze:
+        if self.freeze and not self.unfreeze_last_blocks:
             with torch.no_grad():
                 features = self.dinov2.get_intermediate_layers(inputs, 4)
         else:

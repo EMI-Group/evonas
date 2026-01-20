@@ -4,20 +4,18 @@ set -e
 base_configs="DetectionNAS/configs/supernet_train_base_coco.txt"
 out_dir="./runs/coco/00_train/FT_supernet_coco"
 
-# # 00 maxnet
-# python DetectionNAS/train.py "@${base_configs}" \
-#         --log_directory ${out_dir}/00_maxnet/  \
-#         --num_epochs 12 \
-#         --weight_decay 0.03
+# 00 maxnet
+python DetectionNAS/train.py "@${base_configs}" \
+        --log_directory ${out_dir}/00_maxnet/  \
+        --num_epochs 12
 
-# sleep 3
-# # 01 d_state part1
-# python DetectionNAS/train.py "@${base_configs}" \
-#         --ckpt_path ${out_dir}/00_maxnet/best_bbox_mAP.pth \
-#         --log_directory ${out_dir}/01_state_1/ \
-#         --num_epochs 2 \
-#         --weight_decay 0.02 \
-#         --d_state "[48, 64]"
+sleep 3
+# 01 d_state part1
+python DetectionNAS/train.py "@${base_configs}" \
+        --ckpt_path ${out_dir}/00_maxnet/best_bbox_mAP.pth \
+        --log_directory ${out_dir}/01_state_1/ \
+        --num_epochs 2 \
+        --d_state "[48, 64]"
 
 sleep 3
 # 02 d_state part2

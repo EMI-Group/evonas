@@ -1,7 +1,7 @@
 #!/bin/bash
 
-python MambaDepthNAS/search.py configs/01_search/search_nyu_archpool.txt
+python MambaDepthNAS/retrain.py ./configs/02_retrain/nyu_archpool_small.txt
 
-python MambaDepthNAS/search.py configs/01_search/search_nyu_random.txt 
+python MambaDepthNAS/retrain.py ./configs/02_retrain/nyu_archpool_tiny.txt
 
 echo "this is fine"

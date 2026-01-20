@@ -588,7 +588,7 @@ def main():
     command = 'cp ' + sys.argv[1][1:] + ' ' + args_out_path
     os.system(command)
 
-    save_files = True
+    save_files = False
     if save_files:
         aux_out_path = os.path.join(args.log_directory, args.model_name)
         networks_savepath = os.path.join(aux_out_path, 'networks')

@@ -1,15 +1,17 @@
 DetectionNAS/configs/evo_mamba/mask_rcnn_evomamba_1x_coco.py
+DetectionNAS/configs/dinov2/depth_anything_large_mask-rcnn_coco.py
+--teacher_ckpt ./checkpoints/dinov2_epoch_12.pth
 --model_name MambaDetection
 --encoder SuperNet
 --optimizer adamw
 --num_epochs 12
 --learning_rate 1e-4
---weight_decay 0.05
+--weight_decay 0.01
 --max_norm -1
 --log_directory ./runs/coco/debug/
 --multiprocessing_distributed
 --dist_url tcp://127.0.0.1:2369
---devices 4,5
+--devices 0,1
 
 --log_freq 2000
 --do_online_eval
@@ -19,5 +21,8 @@ DetectionNAS/configs/evo_mamba/mask_rcnn_evomamba_1x_coco.py
 --ssd_expand "[4]"
 
 --dynamic_batch_size 1
---kd_ratio 0.0
+--kd_ratio 0.5
+--f_distill
+--alpha_1 150
+--alpha_2 100
 --amp

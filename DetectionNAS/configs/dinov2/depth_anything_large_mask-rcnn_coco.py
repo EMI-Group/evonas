@@ -1,5 +1,5 @@
 _base_ = [
-    '../swin/mask-rcnn_swin-t-p4-w7_fpn_ms-crop-3x_coco.py'
+    '../swin/mask-rcnn_swin-t-p4-w7_fpn_1x_coco.py'
 ]
 
 custom_imports = dict(
@@ -20,16 +20,16 @@ model = dict(
         type='DINOv2',
         version='large',
         freeze=True,   # 冻结 DINOv2 参数
-        use_adapters=True,  # 使用 adapter 微调
+        use_adapters=False,  # 使用 adapter 微调
+        unfreeze_last_blocks=False,
     ),
     neck=dict(
         _delete_=True,
-        type='Feature2Pyramid',
-        embed_dim=1024,
+        type='DINOv2LayersThenFPN',
+        in_channels=1024,
         out_channels=256,
-        # 以 patch stride=14 为基准，得到 stride=[7,14,28,56,112]
-        rescales=[2, 1, 0.5, 0.25, 0.125],
-        norm_cfg=dict(type='SyncBN', requires_grad=True),
+        num_outs=5,
+        add_extra_convs=False,
     ),
     rpn_head=dict(
         in_channels=256,

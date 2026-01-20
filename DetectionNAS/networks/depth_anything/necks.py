@@ -2,83 +2,73 @@ import torch
 import torch.nn as nn
 from mmcv.cnn import build_norm_layer
 from mmdet.registry import MODELS
-
+from mmdet.models.necks.fpn import FPN as MMDetFPN
 
 @MODELS.register_module()
-class Feature2Pyramid(nn.Module):
-    """
-    Build a multi-scale pyramid from a single-scale ViT feature map.
-    - Input:  x (Tensor) or [x], shape [B, embed_dim, H, W] where H=W=img/patch_size
-    - Output: tuple of 5 feature maps, each [B, out_channels, Hi, Wi]
-
-    Default rescales produce integer strides for patch_size=14:
-      rescales = [2, 1, 0.5, 0.25, 0.125]
-      strides  = [7,14,  28,   56,    112]  (relative to input image)
-    """
-
-    def __init__(
-        self,
-        embed_dim: int = 1024,
-        out_channels: int = 256,
-        rescales=(2, 1, 0.5, 0.25, 0.125),
-        norm_cfg=dict(type="SyncBN", requires_grad=True),
-    ):
+class DINOv2LayersThenFPN(nn.Module):
+    def __init__(self,
+                 in_channels=1024,
+                 out_channels=256,
+                 norm_cfg=dict(type="SyncBN", requires_grad=True),
+                 fpn_norm_cfg=dict(type="SyncBN", requires_grad=True),
+                 num_outs=5,
+                 add_extra_convs=False,
+                 upsample_cfg=dict(mode="nearest")):
         super().__init__()
-        self.embed_dim = embed_dim
-        self.out_channels = out_channels
-        self.rescales = list(rescales)
-
-        # rescale ops
-        self.ops = nn.ModuleList()
-        for k in self.rescales:
-            if k == 2:
-                op = nn.Sequential(
-                    nn.ConvTranspose2d(embed_dim, embed_dim, kernel_size=2, stride=2),
-                )
-            elif k == 4:
-                op = nn.Sequential(
-                    nn.ConvTranspose2d(embed_dim, embed_dim, kernel_size=2, stride=2),
-                    build_norm_layer(norm_cfg, embed_dim)[1],
-                    nn.GELU(),
-                    nn.ConvTranspose2d(embed_dim, embed_dim, kernel_size=2, stride=2),
-                )
-            elif k == 1:
-                op = nn.Identity()
-            elif k == 0.5:
-                op = nn.MaxPool2d(kernel_size=2, stride=2)
-            elif k == 0.25:
-                op = nn.MaxPool2d(kernel_size=4, stride=4)
-            elif k == 0.125:
-                op = nn.MaxPool2d(kernel_size=8, stride=8)
-            else:
-                raise KeyError(f"Unsupported rescale factor: {k}")
-            self.ops.append(op)
-
-        # per-level projection to out_channels (keeps mmdet heads unchanged)
-        self.proj = nn.ModuleList()
-        for _ in self.rescales:
-            self.proj.append(
-                nn.Sequential(
-                    nn.Conv2d(embed_dim, out_channels, kernel_size=1, stride=1, padding=0, bias=False),
-                    build_norm_layer(norm_cfg, out_channels)[1],
-                    nn.GELU(),
-                )
-            )
+        self.to_pyr = MODELS.build(dict(
+            type="DINOv2LayersToPyramidInputs",
+            in_channels=in_channels,
+            out_channels=out_channels,
+            norm_cfg=norm_cfg,
+        ))
+        self.fpn = MMDetFPN(
+            in_channels=[out_channels]*4,   # ✅ FPN 接 4 层
+            out_channels=out_channels,
+            num_outs=num_outs,              # ✅ 输出 5 层（P6由maxpool补）
+            add_extra_convs=add_extra_convs,
+            norm_cfg=fpn_norm_cfg,
+            upsample_cfg=upsample_cfg,
+        )
 
     def forward(self, inputs):
-        # accept Tensor or list/tuple with a single Tensor
-        if isinstance(inputs, (list, tuple)):
-            assert len(inputs) >= 1
-            x = inputs[-1]  # take last by default
-        else:
-            x = inputs
+        # inputs 是 backbone 输出的 4 个 feature maps: [B,1024,Hp,Wp] * 4
+        feats4 = self.to_pyr(inputs)
+        outs5 = self.fpn(feats4)
+        return outs5
+    
 
-        assert x.dim() == 4, f"Expected [B,C,H,W], got {x.shape}"
-        assert x.size(1) == self.embed_dim, f"Expected C={self.embed_dim}, got {x.size(1)}"
+@MODELS.register_module()
+class DINOv2LayersToPyramidInputs(nn.Module):
+    """输入: 4个同尺度特征 [B, C, Hp, Wp]
+       输出: 4个不同尺度特征，stride=[7,14,28,56]，通道统一到 out_channels
+    """
+    def __init__(self, in_channels=1024, out_channels=256,
+                 norm_cfg=dict(type="SyncBN", requires_grad=True)):
+        super().__init__()
 
+        # 对 4 个 level 分别做尺度变换：up2, id, down2, down4
+        self.resize = nn.ModuleList([
+            nn.ConvTranspose2d(in_channels, in_channels, kernel_size=2, stride=2),  # ×2
+            nn.Identity(),                                                         # ×1
+            nn.MaxPool2d(kernel_size=2, stride=2),                                  # /2
+            nn.MaxPool2d(kernel_size=4, stride=4),                                  # /4
+        ])
+
+        # 每层投影到 256
+        self.proj = nn.ModuleList([
+            nn.Sequential(
+                nn.Conv2d(in_channels, out_channels, 1, bias=False),
+                build_norm_layer(norm_cfg, out_channels)[1],
+                nn.GELU(),
+            )
+            for _ in range(4)
+        ])
+
+    def forward(self, feats4):
+        assert isinstance(feats4, (list, tuple)) and len(feats4) == 4
         outs = []
-        for op, proj in zip(self.ops, self.proj):
-            y = op(x)
-            y = proj(y)
-            outs.append(y)
-        return tuple(outs)
+        for i in range(4):
+            x = self.resize[i](feats4[i])
+            x = self.proj[i](x)
+            outs.append(x)
+        return tuple(outs)  # 4 层：stride=[7,14,28,56]
