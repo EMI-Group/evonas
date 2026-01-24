@@ -19,10 +19,10 @@
 --max_depth 10
 --do_random_rotate
 --degree 2.5
---log_directory ./runs/nyu/00_train/FT_supernet_nyu_random/
+--log_directory ./runs/nyu/00_train/FT_supernet_nyu_random_kd/
 --multiprocessing_distributed
 --dist_url tcp://127.0.0.1:2369
---devices 2,3
+--devices 6,7
 
 --log_freq 1000
 --do_online_eval
@@ -42,4 +42,5 @@
 --pretrain ./vssd_supernet_imagenet_1k.pth
 
 --dynamic_batch_size 1
---kd_ratio 0.
+--kd_ratio 0.1
+--f_distill

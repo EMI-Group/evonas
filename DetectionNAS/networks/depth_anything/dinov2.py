@@ -15,7 +15,7 @@ class DINOv2(nn.Module):
         super().__init__()
 
         if version == 'large':
-            self.dinov2 = torch.hub.load('DetectionNAS/networks/depth_anything/torchhub/facebookresearch_dinov2_main', 'dinov2_vitl14', source='local', pretrained=True, drop_path_rate=drop_path_rate)
+            self.dinov2 = torch.hub.load('DetectionNAS/networks/depth_anything/torchhub/facebookresearch_dinov2_main', 'dinov2_vitl14', source='local', pretrained=False, drop_path_rate=drop_path_rate)
         else:
             raise NotImplementedError
 

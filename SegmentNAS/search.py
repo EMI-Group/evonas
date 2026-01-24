@@ -53,7 +53,8 @@ Note: latency tests included; avoid running other GPU tasks.
 
 
 ### start search
-# python SegmentNAS/search.py SegmentNAS/configs/upernet/01_search/search_cityscapes.txt
+# python SegmentNAS/search.py SegmentNAS/configs/01_search/search_cityscapes.txt
+# python SegmentNAS/search.py SegmentNAS/configs/01_search/search_ade20k.txt
 
 ### clear
 # echo quit | nvidia-cuda-mps-control
@@ -108,7 +109,7 @@ def parse_args():
     return args
 
 
-def _spawn_one_gpu(idx_chunk, cfg_chunk, gpu_id):
+def _spawn_one_gpu(idx_chunk, cfg_chunk, gpu_id, config):
     """
     写临时文件 → 调 sub_test_latency.py → 返回 [(arch_idx, latency, macs), ...]
     """
@@ -120,7 +121,7 @@ def _spawn_one_gpu(idx_chunk, cfg_chunk, gpu_id):
         res = subprocess.run(
             ["python", "SegmentNAS/sub_test_latency.py",
              "--config_file", path,
-             "--base_config", "SegmentNAS/configs/upernet/upernet_nas_subnet_cityscapes.py"],
+             "--base_config", config],
             capture_output=True, text=True, check=True, timeout=500,
             env={**os.environ,
                  "OMP_NUM_THREADS": "1",
@@ -143,8 +144,9 @@ def _spawn_one_gpu(idx_chunk, cfg_chunk, gpu_id):
             os.remove(path)
 
 
-def test_lat_mac_mutil(sample_config_list, gpu_arg="0,1,2,3"):
-
+def test_lat_mac_mutil(sample_config_list, args):
+    gpu_arg = args.devices
+    
     if isinstance(gpu_arg, str):  # → ['0','1','2','3']
         gpus = [s.strip() for s in gpu_arg.split(',') if s.strip() != '']
     elif isinstance(gpu_arg, (list, tuple)):
@@ -180,7 +182,7 @@ def test_lat_mac_mutil(sample_config_list, gpu_arg="0,1,2,3"):
             if not idx_chunk:   
                 continue
             fut = pool.submit(_spawn_one_gpu,
-                              idx_chunk, cfg_chunk, gpus[gid])
+                              idx_chunk, cfg_chunk, gpus[gid], args.config)
             futs.append(fut)
 
         for fut in as_completed(futs):
@@ -627,7 +629,7 @@ def main():
     ### evolution
     logger.info(f"==> Starting evolution...")
     
-    latency_func = partial(test_lat_mac_mutil, gpu_arg=args.devices)
+    latency_func = partial(test_lat_mac_mutil, args=args)
     problem = NasProblem(
         latency_func=latency_func,
         search_sapce=ss, 

@@ -1,5 +1,5 @@
 #!/bin/bash
 
-python MambaDepthNAS/retrain.py ./configs/02_retrain/nyu_archpool_base.txt
+python MambaDepthNAS/train.py configs/00_train/nyu_nas_pool.txt
 
 echo "this is fine"

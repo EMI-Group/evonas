@@ -109,6 +109,10 @@ pip install ftfy==6.3.1
 
 2026/1/12 update SuperNet Training (Add Mask R-CNN bbox head distillation)
 
+2026/1/20 update SuperNet Training (Fix detection freq_loss nan)
+
+2026/1/24 update Segmentation Search (Fix latency config for ade20k)
+
 ------
 
 ##  Search Space

@@ -546,7 +546,7 @@ def main():
     os.system(command)
 
     args_out_path = os.path.join(args.log_directory, args.model_name)
-    command = 'cp ' + sys.argv[1][1:] + ' ' + args_out_path
+    command = 'cp ' + sys.argv[1] + ' ' + args_out_path
     os.system(command)
 
     save_files = True

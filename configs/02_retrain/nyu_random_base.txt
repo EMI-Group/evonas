@@ -2,8 +2,8 @@
 --model_name scratch_train
 --encoder SuperNet
 --dataset nyu
---data_path /home/zhanghaoyu/dataset/NYU_Depth_V2/sync/
---gt_path /home/zhanghaoyu/dataset/NYU_Depth_V2/sync/
+--data_path /data/dataset/NYU_Depth_V2/sync/
+--gt_path /data/dataset/NYU_Depth_V2/sync/
 --filenames_file data_splits/nyudepthv2_train_files_with_gt_dense.txt
 --batch_size 16
 --num_epochs 40
@@ -19,16 +19,16 @@
 --max_depth 10
 --do_random_rotate
 --degree 2.5
---log_directory ./runs/exp11_scratch_train/nyu_random/01_nyu_base/
+--log_directory ./runs/nyu/02_retrain/nyu_random/01_nyu_base_new
 --multiprocessing_distributed
 --dist_url tcp://127.0.0.1:2351
---devices 7
+--devices 6,7
 
 --log_freq 1000
 --do_online_eval
 --eval_freq 1000
---data_path_eval /home/zhanghaoyu/dataset/NYU_Depth_V2/test/
---gt_path_eval /home/zhanghaoyu/dataset/NYU_Depth_V2/test/
+--data_path_eval /data/dataset/NYU_Depth_V2/test/
+--gt_path_eval /data/dataset/NYU_Depth_V2/test/
 --filenames_file_eval data_splits/nyudepthv2_test_files_with_gt.txt
 --min_depth_eval 1e-3
 --max_depth_eval 10
@@ -37,7 +37,7 @@
 --pretrain ./vssd_supernet_imagenet_1k.pth
 
 --mlp_ratio "[3.0, 3.0, 2.0, 2.0]"
---d_state "[16, 64, 64]"
+--d_state "[16, 48, 48]"
 --ssd_expand "[4, 2, 4]"
 --depth "[[0, 1], [1, 1, 1, 0], [1, 1, 1, 1, 0, 1, 0, 0], [0, 1, 1, 0]]"
 
