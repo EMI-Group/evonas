@@ -12,6 +12,7 @@ sys.path.insert(0, PROJECT_ROOT)
 import json, subprocess, tempfile
 import argparse
 import numpy as np
+import queue
 from tqdm import tqdm
 from mmengine.runner import Runner
 from ptflops import get_model_complexity_info
@@ -502,7 +503,13 @@ class NasProblem(Problem):
         err_list = [None] * n
         num_batches = (n + self.batch - 1) // self.batch
         for _ in range(num_batches):
-            start_idx, objs_batch = self.result_q.get()
+            try:
+                start_idx, objs_batch = self.result_q.get(timeout=1800)
+            except queue.Empty:
+                self.logger.error("Timeout waiting result_q. Workers:")
+                for p in self.workers:
+                    self.logger.error(f"pid={p.pid} alive={p.is_alive()} exitcode={p.exitcode}")
+                raise
             err_list[start_idx: start_idx + len(objs_batch)] = objs_batch
 
         eval_cost_time = time.time() - eval_s_time
@@ -653,17 +660,18 @@ def main():
         eliminate_duplicates=True
     )
 
-    res = minimize(
-        problem, 
-        method, 
-        termination=('n_gen', args.n_iter), 
-        save_history=False, 
-        callback=logger_cb, 
-        verbose=False, 
-        seed=1274395
-    )
-    
-    problem.exit_worker()
+    try:
+        res = minimize(
+            problem,
+            method,
+            termination=('n_gen', args.n_iter),
+            save_history=False,
+            callback=logger_cb,
+            verbose=False,
+            seed=1274395
+        )
+    finally:
+        problem.exit_worker()
 
     ### show results
     logger_cb.save(save_path=args.log_directory)

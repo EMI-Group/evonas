@@ -1,5 +1,8 @@
 #!/bin/bash
 
-python MambaDepthNAS/train.py configs/00_train/nyu_nas_pool.txt
+python SegmentNAS/retrain.py SegmentNAS/configs/02_retrain/retrain_supernet_base.txt
+
+python SegmentNAS/retrain.py SegmentNAS/configs/02_retrain/retrain_supernet_tiny.txt
+
 
 echo "this is fine"

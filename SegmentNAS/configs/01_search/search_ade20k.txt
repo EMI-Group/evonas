@@ -18,4 +18,4 @@
 --mut_p 0.1
 
 --model_batch 3
---concurrency 4
+--concurrency 2
