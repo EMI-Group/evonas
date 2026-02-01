@@ -106,7 +106,7 @@ def main():
 
     print(json.dumps(results))
 
-# CUDA_VISIBLE_DEVICES=5 python SegmentNAS/sub_test_latency.py --config_file /data/code_yzh/DistillNAS/tmp/tmpabcd_GPU0.json --base_config SegmentNAS/configs/upernet/upernet_evom_4xb4-160k_ade20k-512x512_fpn.py
+# CUDA_VISIBLE_DEVICES=5 python SegmentNAS/sub_test_latency.py --config_file ./tmp/tmpabcd_GPU0.json --base_config SegmentNAS/configs/upernet/upernet_evom_4xb4-160k_ade20k-512x512_fpn.py
 
 if __name__ == "__main__":
     main()
