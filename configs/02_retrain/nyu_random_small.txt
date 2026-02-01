@@ -36,10 +36,10 @@
 
 --ckpt_path ./runs/nyu/00_train/FT_supernet_nyu_random_kd/abs_rel_best_weight.pth
 
---mlp_ratio "[2.0, 1.0, 2.0, 0.5]"
---d_state "[16, 16, 64]"
---ssd_expand "[1, 2, 2]"
---depth "[[0, 1], [1, 1, 0, 0], [1, 1, 1, 1, 0, 0, 0, 0], [0, 1, 0, 0]]"
+--mlp_ratio "[3.5, 3.5, 2.0, 0.5]"
+--d_state "[16, 32, 64]"
+--ssd_expand "[2, 2, 3]"
+--depth "[[0, 1], [1, 1, 0, 0], [1, 1, 1, 1, 0, 0, 0, 1], [0, 1, 1, 0]]"
 
 
 --dynamic_batch_size 1
