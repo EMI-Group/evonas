@@ -1,14 +1,14 @@
 --teacher_config ./configs/depth_any_nyu.py
---model_name scratch_train
+--model_name MambaDepth_retrain
 --encoder SuperNet
 --dataset nyu
---data_path /data/dataset/NYU_Depth_V2/sync/
---gt_path /data/dataset/NYU_Depth_V2/sync/
+--data_path /mnt/8T-1/datasets/NYU_Depth_V2/sync/
+--gt_path /mnt/8T-1/datasets/NYU_Depth_V2/sync/
 --filenames_file data_splits/nyudepthv2_train_files_with_gt_dense.txt
 --batch_size 16
---num_epochs 40
+--num_epochs 20
 --learning_rate 8e-5
---min_lr 8e-6
+--min_lr 1e-6
 --warmup_lr 1e-6
 --warmup_epochs 3
 --weight_decay 0.001
@@ -19,7 +19,7 @@
 --max_depth 10
 --do_random_rotate
 --degree 2.5
---log_directory ./runs/nyu/02_retrain/nyu_random/01_nyu_base_new
+--log_directory ./runs/nyu/02_retrain/nyu_random/01_nyu_supkd_base
 --multiprocessing_distributed
 --dist_url tcp://127.0.0.1:2351
 --devices 6,7
@@ -27,19 +27,19 @@
 --log_freq 1000
 --do_online_eval
 --eval_freq 1000
---data_path_eval /data/dataset/NYU_Depth_V2/test/
---gt_path_eval /data/dataset/NYU_Depth_V2/test/
+--data_path_eval /mnt/8T-1/datasets/NYU_Depth_V2/test/
+--gt_path_eval /mnt/8T-1/datasets/NYU_Depth_V2/test/
 --filenames_file_eval data_splits/nyudepthv2_test_files_with_gt.txt
 --min_depth_eval 1e-3
 --max_depth_eval 10
 --eigen_crop
 
---pretrain ./vssd_supernet_imagenet_1k.pth
+--ckpt_path ./runs/nyu/00_train/FT_supernet_nyu_random_kd/abs_rel_best_weight.pth
 
---mlp_ratio "[3.0, 3.0, 2.0, 2.0]"
---d_state "[16, 48, 48]"
---ssd_expand "[4, 2, 4]"
---depth "[[0, 1], [1, 1, 1, 0], [1, 1, 1, 1, 0, 1, 0, 0], [0, 1, 1, 0]]"
+--mlp_ratio "[3.5, 4.0, 2.0, 0.5]"
+--d_state "[48, 64, 64]"
+--ssd_expand "[2, 2, 4]"
+--depth "[[0, 1], [1, 1, 1, 0], [1, 1, 1, 1, 0, 1, 1, 1], [0, 1, 1, 1]]"
 
 
 --dynamic_batch_size 1
@@ -48,3 +48,4 @@
 --alpha_1 0.08
 --alpha_2 0.06
 --fmd_learning_rate 5e-5
+--amp
