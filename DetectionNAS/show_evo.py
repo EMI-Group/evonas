@@ -6,7 +6,7 @@ import matplotlib.animation as animation
 GIF = False
 HV = False
 
-target_dir = '/data/code_yzh/DistillNAS/runs/coco/01_search/run_search_10_full_dataset'
+target_dir = '/data/code_yzh/DistillNAS/runs/coco/01_search/run_search_13_500_dataset_mAP_debug'
 # Ensure output directory exists
 output_dir = os.path.join(target_dir, 'show_evo_pics/')
 os.makedirs(output_dir, exist_ok=True)
@@ -25,32 +25,32 @@ if gen_steps[-1] != max_gen:
 cmap = plt.cm.viridis_r
 colors = [cmap(i / (len(gen_steps) - 1)) for i in range(len(gen_steps))]
 
-# Plot 1: Latency vs loss
+# Plot 1: Latency vs box_mAP
 plt.figure(figsize=(8, 6))
 for i, gen in enumerate(gen_steps):
     data = df[df['gen'] == gen]
-    plt.scatter(data['latency'], data['loss'], label=f'Gen {gen}', color=colors[i])
+    plt.scatter(data['latency'], data['box_mAP'], label=f'Gen {gen}', color=colors[i])
 plt.xlabel('Latency')
-plt.ylabel('Loss')
-plt.title('Latency vs Loss (Multiple Generations)')
+plt.ylabel('box_mAP')
+plt.title('Latency vs box_mAP (Multiple Generations)')
 plt.legend()
 plt.grid(True)
 plt.tight_layout()
-plt.savefig(os.path.join(output_dir, 'latency_vs_loss_multi_gen.png'))
+plt.savefig(os.path.join(output_dir, 'latency_vs_box_mAP_multi_gen.png'))
 plt.close()
 
-# Plot 2: MACs vs loss
+# Plot 2: MACs vs box_mAP
 plt.figure(figsize=(8, 6))
 for i, gen in enumerate(gen_steps):
     data = df[df['gen'] == gen]
-    plt.scatter(data['macs'], data['loss'], label=f'Gen {gen}', color=colors[i])
+    plt.scatter(data['macs'], data['box_mAP'], label=f'Gen {gen}', color=colors[i])
 plt.xlabel('MACs')
-plt.ylabel('Loss')
-plt.title('MACs vs Loss (Multiple Generations)')
+plt.ylabel('box_mAP')
+plt.title('MACs vs box_mAP (Multiple Generations)')
 plt.legend()
 plt.grid(True)
 plt.tight_layout()
-plt.savefig(os.path.join(output_dir, 'macs_vs_loss_multi_gen.png'))
+plt.savefig(os.path.join(output_dir, 'macs_vs_box_mAP_multi_gen.png'))
 plt.close()
 
 # Plot 3: MACs vs Latency
@@ -67,19 +67,19 @@ plt.tight_layout()
 plt.savefig(os.path.join(output_dir, 'macs_vs_latency_multi_gen.png'))
 plt.close()
 
-# Plot 4: 3D Plot - Loss vs Latency vs MACs
+# Plot 4: 3D Plot - box_mAP vs Latency vs MACs
 fig = plt.figure(figsize=(10, 8))
 ax = fig.add_subplot(111, projection='3d')
 for i, gen in enumerate(gen_steps):
     data = df[df['gen'] == gen]
-    ax.scatter(data['latency'], data['macs'], data['loss'], label=f'Gen {gen}', color=colors[i])
+    ax.scatter(data['latency'], data['macs'], data['box_mAP'], label=f'Gen {gen}', color=colors[i])
 ax.set_xlabel('Latency')
 ax.set_ylabel('MACs')
 ax.set_zlabel('Abs Relative Error')
-ax.set_title('3D Plot: Loss vs Latency vs MACs (Multiple Generations)')
+ax.set_title('3D Plot: box_mAP vs Latency vs MACs (Multiple Generations)')
 ax.legend()
 plt.tight_layout()
-plt.savefig(os.path.join(output_dir, '3d_loss_latency_macs_multi_gen.png'))
+plt.savefig(os.path.join(output_dir, '3d_box_mAP_latency_macs_multi_gen.png'))
 plt.close()
 
 
@@ -92,13 +92,13 @@ if GIF:
     # Compute global axis limits
     x_min, x_max = df['latency'].min(), df['latency'].max()
     y_min, y_max = df['macs'].min(), df['macs'].max()
-    z_min, z_max = df['loss'].min(), df['loss'].max()
+    z_min, z_max = df['box_mAP'].min(), df['box_mAP'].max()
 
     def update(frame):
         ax.clear()
         current_gen = frame + 1
         data = df[df['gen'] == current_gen]
-        ax.scatter(data['latency'], data['macs'], data['loss'], color='blue')
+        ax.scatter(data['latency'], data['macs'], data['box_mAP'], color='blue')
         ax.set_xlabel('Latency')
         ax.set_ylabel('MACs')
         ax.set_zlabel('Abs Relative Error')
@@ -113,28 +113,28 @@ if GIF:
     plt.close()
 
     ### gif 2
-    # 2D Animation: Latency vs Loss across generations
+    # 2D Animation: Latency vs box_mAP across generations
     fig2d, ax2d = plt.subplots(figsize=(8, 6))
 
     # Global axis limits
     x_min, x_max = df['latency'].min(), df['latency'].max()
-    y_min, y_max = df['loss'].min(), df['loss'].max()
+    y_min, y_max = df['box_mAP'].min(), df['box_mAP'].max()
 
     def update_2d(frame):
         ax2d.clear()
         current_gen = frame + 1
         data = df[df['gen'] == current_gen]
-        ax2d.scatter(data['latency'], data['loss'], color='blue')
+        ax2d.scatter(data['latency'], data['box_mAP'], color='blue')
         ax2d.set_xlim(x_min, x_max)
         ax2d.set_ylim(y_min, y_max)
         ax2d.set_xlabel('Latency')
         ax2d.set_ylabel('Abs Relative Error')
-        ax2d.set_title(f'Latency vs Loss - Generation {current_gen}')
+        ax2d.set_title(f'Latency vs box_mAP - Generation {current_gen}')
         ax2d.grid(True)
 
     max_gen = df['gen'].max()
     ani_2d = animation.FuncAnimation(fig2d, update_2d, frames=max_gen, interval=200)
-    ani_2d.save(os.path.join(output_dir, 'latency_vs_loss_evolution.gif'), writer='pillow')
+    ani_2d.save(os.path.join(output_dir, 'latency_vs_box_mAP_evolution.gif'), writer='pillow')
     plt.close()
 
 ### singe object
@@ -143,8 +143,8 @@ grouped = df.groupby('gen')
 gens = sorted(grouped.groups.keys())
 
 # Compute min & mean for each objective
-loss_min = [grouped.get_group(g)['loss'].min() for g in gens]
-loss_mean = [grouped.get_group(g)['loss'].mean() for g in gens]
+box_mAP_min = [grouped.get_group(g)['box_mAP'].min() for g in gens]
+box_mAP_mean = [grouped.get_group(g)['box_mAP'].mean() for g in gens]
 
 latency_min = [grouped.get_group(g)['latency'].min() for g in gens]
 latency_mean = [grouped.get_group(g)['latency'].mean() for g in gens]
@@ -152,17 +152,17 @@ latency_mean = [grouped.get_group(g)['latency'].mean() for g in gens]
 macs_min = [grouped.get_group(g)['macs'].min() for g in gens]
 macs_mean = [grouped.get_group(g)['macs'].mean() for g in gens]
 
-# Plot Loss: min + mean
+# Plot box_mAP: min + mean
 plt.figure(figsize=(8, 5))
-plt.plot(gens, loss_min, marker='o', label='Min Loss')
-plt.plot(gens, loss_mean, marker='x', linestyle='--', label='Mean Loss')
+plt.plot(gens, box_mAP_min, marker='o', label='Min box_mAP')
+plt.plot(gens, box_mAP_mean, marker='x', linestyle='--', label='Mean box_mAP')
 plt.xlabel('Generation')
-plt.ylabel('Loss')
-plt.title('Convergence - Loss')
+plt.ylabel('box_mAP')
+plt.title('Convergence - box_mAP')
 plt.legend()
 plt.grid(True)
 plt.tight_layout()
-plt.savefig(os.path.join(output_dir, 'convergence_loss_min_mean.png'))
+plt.savefig(os.path.join(output_dir, 'convergence_box_mAP_min_mean.png'))
 plt.close()
 
 # Plot Latency: min + mean
@@ -208,7 +208,7 @@ if HV:
         return hv
 
     # 只需选择两个或三个目标，HV通常支持2/3维
-    objectives = ['loss', 'latency', 'macs']  # 或 ['loss', 'latency', 'macs']，看你目标维数
+    objectives = ['box_mAP', 'latency', 'macs']  # 或 ['box_mAP', 'latency', 'macs']，看你目标维数
 
     # 选定参考点（以所有数据最大值*1.01）
     ref_pt = [df[obj].max() for obj in objectives]

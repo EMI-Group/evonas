@@ -2,7 +2,7 @@
 --model_name DetectionSearch
 --ckpt_path ./runs/coco/00_train/07_best_bbox_mAP.pth
 
---log_directory ./runs/coco/01_search/run_search_11_full_dataset_mAP/
+--log_directory ./runs/coco/01_search/run_search_14_2k_dataset_mAP/
 --multiprocessing_distributed
 --dist_url tcp://127.0.0.1:2381
 --devices 0,1,2,3,4,5,6,7

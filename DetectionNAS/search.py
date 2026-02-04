@@ -36,7 +36,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from itertools import cycle
 
 from utils import post_process_depth, flip_lr, compute_errors, eval_metrics, \
-                       convert_arg_line_to_args, get_root_logger, unwrap_model, str2list, is_main_process, compute_metrics
+                       convert_arg_line_to_args, get_root_logger, unwrap_model, str2list, is_main_process, compute_metrics, clone_data_samples_light
 
 from search_space import MambaSearchSpace
 from mmengine import Config
@@ -56,7 +56,7 @@ Note: latency tests included; avoid running other GPU tasks.
 
 
 ### final
-# python DetectionNAS/search.py DetectionNAS/configs/search_coco.txt
+# python DetectionNAS/search.py DetectionNAS/configs/01_search/search_coco.txt 
 
 ### clear
 # echo quit | nvidia-cuda-mps-control
@@ -354,9 +354,42 @@ class JointModel(nn.Module):
         super().__init__()
         self.models = nn.ModuleList(models)
 
-    def forward(self, x):
-        return [m(**x, mode='predict') for m in self.models]
-        # return [m(**x, mode='loss') for m in self.models]
+    def forward(self, x, mode='predict'):
+        outs = []
+        for m in self.models:
+            x_i = dict(x)
+            x_i["data_samples"] = clone_data_samples_light(x["data_samples"])
+            outs.append(m(**x_i, mode=mode))
+        return outs
+
+
+def recalibrate_bn(model, fixed_data_list, device):
+    """
+    使用固定的数据列表进行 BN 校准，确保公平性。
+    """
+    model.train()
+    
+    # 冻结参数
+    for p in model.parameters():
+        p.requires_grad = False
+
+    # 重置统计量
+    for m in model.modules():
+        if isinstance(m, (nn.BatchNorm2d, nn.BatchNorm1d, nn.SyncBatchNorm)):
+            m.reset_running_stats()
+
+    # 直接遍历固定的列表
+    with torch.no_grad():
+        for data_batch in fixed_data_list:
+            # 拿到原始模型进行预处理
+            raw_model = model.models[0] if hasattr(model, 'models') else model
+            
+            # 数据预处理 (搬运到 GPU, Pad, Normalize 等)
+            # 注意：fixed_data_list 里的数据通常在 CPU 上，这里会搬运到 GPU
+            data_batch = unwrap_model(raw_model).data_preprocessor(data_batch, False)
+            
+            with mautocast(enabled=False):
+                _ = model(data_batch, mode='loss')
 
 
 def worker_main_eval_func(task_q, result_q, args, cfg):
@@ -365,6 +398,27 @@ def worker_main_eval_func(task_q, result_q, args, cfg):
         raise RuntimeError("CUDA device not available. Please check your GPU or CUDA installation.")
     device = torch.device("cuda")
     dataloader_eval = Runner.build_dataloader(cfg.val_dataloader, seed=42)
+
+    # # 训练集 (仅用于 BN 校准，构建一次，复用)
+    # print(f"Worker {os.getpid()}: Pre-fetching BN calibration data...")
+    # calib_cfg = cfg.train_dataloader.copy()
+    # if 'sampler' in calib_cfg and isinstance(calib_cfg['sampler'], dict):
+    #     calib_cfg['sampler']['shuffle'] = True
+    # calib_cfg['persistent_workers'] = False
+    # calib_cfg['num_workers'] = 0 
+    
+    # temp_loader = Runner.build_dataloader(calib_cfg, seed=42)
+    
+    # NUM_CALIB_BATCHES = 50
+    # fixed_calib_data = []
+
+    # for i, batch in enumerate(temp_loader):
+    #     if i >= NUM_CALIB_BATCHES:
+    #         break
+    #     fixed_calib_data.append(batch)
+    
+    # del temp_loader # 清理 loader
+    # print(f"Worker {os.getpid()}: Cached {len(fixed_calib_data)} batches. Ready.")
     
     dataset_meta = getattr(dataloader_eval.dataset, 'metainfo', None)
     assert dataset_meta is not None and 'classes' in dataset_meta, \
@@ -404,35 +458,27 @@ def worker_main_eval_func(task_q, result_q, args, cfg):
             model_module = unwrap_model(m)
             model_module.backbone.backbone.set_sample_config(sample_config=gene)
 
-        joint_model = JointModel(models).to(device)
-        joint_model.eval()
 
-        eval_loss_list = [0.0 for _ in range(n)]
-        num_batches = 0
+        joint_model = JointModel(models).to(device)
+        # recalibrate_bn(joint_model, fixed_calib_data, device)
+        joint_model.eval()
 
         with torch.no_grad():
             for _, eval_sample_batched in enumerate(tqdm(dataloader_eval)):
                 batched = unwrap_model(models[0]).data_preprocessor(eval_sample_batched, False)
                 with mautocast(enabled=False):  # if True, will drop 0.7~0.8 mAP
-                    batch_outputs = joint_model(batched)
+                    preds = joint_model(batched)
 
-                num_batches += 1
+                # update eval measures
                 for i in range(n):
-                    # loss, log_vars = model_module.parse_losses(losses[i])
-                    # eval_loss_list[i] += float(loss)
-                    evaluators[i].process(data_samples=batched['data_samples'], data_batch=batch_outputs[i])
+                    evaluators[i].process(data_samples=preds[i], data_batch=eval_sample_batched)
 
-            # avg_loss_list = [eval_loss / num_batches for eval_loss in eval_loss_list]
-        
-        map_list = []
-        for evaluator in evaluators:
-            # evaluate 返回字典，如 {'coco/bbox_mAP': 0.35, ...}
-            metrics = evaluator.evaluate(len(dataloader_eval.dataset))
-            # 默认取 coco/bbox_mAP，请根据你的 config 确认 key 名称
-            map_score = metrics.get('coco/bbox_mAP', 0.0) 
-            map_list.append(map_score)
+            mAP_list = []
+            for i in range(n):
+                metrics_dict = evaluators[i].evaluate(len(dataloader_eval.dataset))
+                mAP_list.append(metrics_dict['coco/bbox_mAP'])
 
-        result_q.put((start_idx, map_list))
+        result_q.put((start_idx, mAP_list))
         torch.cuda.empty_cache()
     
     torch.cuda.empty_cache()
@@ -543,7 +589,7 @@ class NasProblem(Problem):
         latency_np = np.array(latency_list, dtype=np.float32)
         macs_np    = np.array(macs_list, dtype=np.float32)
 
-        self.logger.info(f"[Gen {gen}] (New_Pop) box_mAP: mean={map_np.mean():.4f}, max={map_np.max():.4f}")
+        self.logger.info(f"[Gen {gen}] (New_Pop) box_mAP: mean={map_np.mean():.4f}, min={map_np.min():.4f}, max={map_np.max():.4f}")
         self.logger.info(f"[Gen {gen}] (New_Pop) latency: mean={latency_np.mean():.4f}, min={latency_np.min():.4f}, max={latency_np.max():.4f}")
         self.logger.info(f"[Gen {gen}] (New_Pop) macs_g: mean={macs_np.mean():.4f}, min={macs_np.min():.4f}, max={macs_np.max():.4f}")
 

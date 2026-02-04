@@ -556,3 +556,11 @@ def pad_to_divisor_rb(x, divisor=14, pad_val=0.0):
     newW = (W + divisor - 1) // divisor * divisor
     x_pad = F.pad(x, (0, newW - W, 0, newH - H), value=pad_val)
     return x_pad, (H, W)
+
+
+import copy
+
+def clone_data_samples_light(data_samples):
+    # 只做对象壳的浅拷贝：保证 ds2 is not ds
+    # 不碰任何内部字段，副作用最小
+    return [copy.copy(ds) for ds in data_samples]
