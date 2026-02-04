@@ -4,6 +4,7 @@ import argparse
 import gc
 from ptflops import get_model_complexity_info
 import time
+import numpy as np
 from mmdet.registry import MODELS
 from networks.model import MambaDetection
 from mmengine.registry import init_default_scope
@@ -38,14 +39,17 @@ def test_latency_mac(model, input_shape=(1,3,224,224), device='cuda', warmup=30,
     input_shape = (1, *input_shape[1:])
     input_tensor = torch.randn(*input_shape).to(device)
     N, C, H, W = input_tensor.shape
-    meta = {
-        'img_shape': (H, W, C),
-        'ori_shape': (H, W, C),
-        'pad_shape': (H, W, C),
-        'scale_factor': (1.0, 1.0, 1.0, 1.0),
-        'flip': False,
-        'flip_direction': None,
-    }
+    meta = dict(
+        img_shape=(H, W, 3),
+        ori_shape=(H, W, 3),
+        pad_shape=(H, W, 3),
+        # 关键：给 (w_scale, h_scale) 两个数，更贴近 Resize 产生的格式
+        scale_factor=np.array([1.0, 1.0], dtype=np.float32),
+        flip=False,
+        flip_direction=None,
+        # 建议补：很多组件会用到
+        batch_input_shape=(H, W),
+    )
     data_samples = [DetDataSample(metainfo=meta) for _ in range(N)]
 
     # warmup

@@ -2,13 +2,13 @@
 --model_name scratch_train
 --encoder SuperNet
 --dataset nyu
---data_path /home/zhanghaoyu/dataset/NYU_Depth_V2/sync/
---gt_path /home/zhanghaoyu/dataset/NYU_Depth_V2/sync/
+--data_path /data/dataset/NYU_Depth_V2/sync/
+--gt_path /data/dataset/NYU_Depth_V2/sync/
 --filenames_file data_splits/nyudepthv2_train_files_with_gt_dense.txt
 --batch_size 16
 --num_epochs 40
 --learning_rate 8e-5
---min_lr 8e-6
+--min_lr 1e-6
 --warmup_lr 1e-6
 --warmup_epochs 3
 --weight_decay 0.001
@@ -19,16 +19,16 @@
 --max_depth 10
 --do_random_rotate
 --degree 2.5
---log_directory ./runs/exp11_scratch_train/nyu/01_nyu_base/
+--log_directory ./runs/nyu/02_retrain/nyu/01_nyu_base_newlr/
 --multiprocessing_distributed
 --dist_url tcp://127.0.0.1:2350
---devices 6
+--devices 4,5,6,7
 
 --log_freq 1000
 --do_online_eval
 --eval_freq 1000
---data_path_eval /home/zhanghaoyu/dataset/NYU_Depth_V2/test/
---gt_path_eval /home/zhanghaoyu/dataset/NYU_Depth_V2/test/
+--data_path_eval /data/dataset/NYU_Depth_V2/test/
+--gt_path_eval /data/dataset/NYU_Depth_V2/test/
 --filenames_file_eval data_splits/nyudepthv2_test_files_with_gt.txt
 --min_depth_eval 1e-3
 --max_depth_eval 10

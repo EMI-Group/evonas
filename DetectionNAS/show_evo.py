@@ -6,7 +6,7 @@ import matplotlib.animation as animation
 GIF = False
 HV = False
 
-target_dir = '/data/code_yzh/DistillNAS/runs/coco/01_search/run_search_4_full_dataset'
+target_dir = '/data/code_yzh/DistillNAS/runs/coco/01_search/run_search_10_full_dataset'
 # Ensure output directory exists
 output_dir = os.path.join(target_dir, 'show_evo_pics/')
 os.makedirs(output_dir, exist_ok=True)

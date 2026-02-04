@@ -123,7 +123,7 @@ def _spawn_one_gpu(idx_chunk, cfg_chunk, gpu_id):
         res = subprocess.run(
             ["python", "DetectionNAS/sub_test_latency.py",
              "--config_file", path,
-             "--base_config", "DetectionNAS/configs/mask_rcnn_DAMamba_fpn_1x_coco.py"],
+             "--base_config", "DetectionNAS/configs/evo_mamba/mask_rcnn_evomamba_search.py"],
             capture_output=True, text=True, check=True, timeout=500,
             env={**os.environ,
                  "OMP_NUM_THREADS": "1",
@@ -355,8 +355,8 @@ class JointModel(nn.Module):
         self.models = nn.ModuleList(models)
 
     def forward(self, x):
-        # return [m(**x, mode='predict') for m in self.models]
-        return [m(**x, mode='loss') for m in self.models]
+        return [m(**x, mode='predict') for m in self.models]
+        # return [m(**x, mode='loss') for m in self.models]
 
 
 def worker_main_eval_func(task_q, result_q, args, cfg):
@@ -414,16 +414,25 @@ def worker_main_eval_func(task_q, result_q, args, cfg):
             for _, eval_sample_batched in enumerate(tqdm(dataloader_eval)):
                 batched = unwrap_model(models[0]).data_preprocessor(eval_sample_batched, False)
                 with mautocast(enabled=False):  # if True, will drop 0.7~0.8 mAP
-                    losses = joint_model(batched)
+                    batch_outputs = joint_model(batched)
 
                 num_batches += 1
                 for i in range(n):
-                    loss, log_vars = model_module.parse_losses(losses[i])
-                    eval_loss_list[i] += float(loss)
+                    # loss, log_vars = model_module.parse_losses(losses[i])
+                    # eval_loss_list[i] += float(loss)
+                    evaluators[i].process(data_samples=batched['data_samples'], data_batch=batch_outputs[i])
 
-            avg_loss_list = [eval_loss / num_batches for eval_loss in eval_loss_list]
+            # avg_loss_list = [eval_loss / num_batches for eval_loss in eval_loss_list]
         
-        result_q.put((start_idx, avg_loss_list))
+        map_list = []
+        for evaluator in evaluators:
+            # evaluate 返回字典，如 {'coco/bbox_mAP': 0.35, ...}
+            metrics = evaluator.evaluate(len(dataloader_eval.dataset))
+            # 默认取 coco/bbox_mAP，请根据你的 config 确认 key 名称
+            map_score = metrics.get('coco/bbox_mAP', 0.0) 
+            map_list.append(map_score)
+
+        result_q.put((start_idx, map_list))
         torch.cuda.empty_cache()
     
     torch.cuda.empty_cache()
@@ -500,11 +509,11 @@ class NasProblem(Problem):
         for start in range(0, n, self.batch):
             self.task_q.put((start, sample_config_list[start: start + self.batch]))
 
-        err_list = [None] * n
+        map_list = [None] * n
         num_batches = (n + self.batch - 1) // self.batch
         for _ in range(num_batches):
             start_idx, objs_batch = self.result_q.get()
-            err_list[start_idx: start_idx + len(objs_batch)] = objs_batch
+            map_list[start_idx: start_idx + len(objs_batch)] = objs_batch
 
         eval_cost_time = time.time() - eval_s_time
         lat_s_time = time.time()
@@ -515,26 +524,26 @@ class NasProblem(Problem):
         gen = self.generation_id
         self.generation_id += 1
 
-        for i, (_x, err, lat, mac) in enumerate(zip(x, err_list, latency_list, macs_list)):
-            f[i, 0] = err
+        for i, (_x, val_map, lat, mac) in enumerate(zip(x, map_list, latency_list, macs_list)):
+            f[i, 0] = 1.0 - val_map
             f[i, 1] = lat
             f[i, 2] = mac
 
         out["F"] = f
 
         # log
-        self.logger.info(f"pop_loss = {[round(float(err), 4) for err in err_list]}")
+        self.logger.info(f"pop_mAP = {[round(float(m), 4) for m in map_list]}")
         self.logger.info(f"pop_latency = {[round(float(lat), 4) for lat in latency_list]}")
         self.logger.info(f"pop_mac_g = {[round(float(mac), 4) for mac in macs_list]}")
 
         self.logger.info(f'[Gen {gen}] eval_cost_time: {eval_cost_time:.2f}s')
         self.logger.info(f'[Gen {gen}] lat_cost_time: {lat_cost_time:.2f}s')
         
-        err_np = np.array(err_list, dtype=np.float32)
+        map_np = np.array(map_list, dtype=np.float32)
         latency_np = np.array(latency_list, dtype=np.float32)
         macs_np    = np.array(macs_list, dtype=np.float32)
 
-        self.logger.info(f"[Gen {gen}] (New_Pop) loss: mean={err_np.mean():.4f}, min={err_np.min():.4f}, max={err_np.max():.4f}")
+        self.logger.info(f"[Gen {gen}] (New_Pop) box_mAP: mean={map_np.mean():.4f}, max={map_np.max():.4f}")
         self.logger.info(f"[Gen {gen}] (New_Pop) latency: mean={latency_np.mean():.4f}, min={latency_np.min():.4f}, max={latency_np.max():.4f}")
         self.logger.info(f"[Gen {gen}] (New_Pop) macs_g: mean={macs_np.mean():.4f}, min={macs_np.min():.4f}, max={macs_np.max():.4f}")
 
@@ -558,7 +567,7 @@ class EvolutionLogger(Callback):
         self.data.setdefault("pop_x", []).append(X.tolist())
 
         if self.logger:
-            metrics = ["loss", "latency", "macs_g"]
+            metrics = ["box_mAP", "latency", "macs_g"]
             for i, name in enumerate(metrics):
                 vals = F[:, i]
                 if name == "box_mAP":
@@ -576,7 +585,7 @@ class EvolutionLogger(Callback):
                 config = self.ss.decode(x)
                 row = {
                     "gen": gen + 1,
-                    "loss": round(f[0], 4),
+                    "box_mAP": round(1.0 - f[0], 4),
                     "latency": round(f[1], 4),
                     "macs": round(f[2], 4),
                     "config": str(config).replace("\n", "")
@@ -678,7 +687,7 @@ def main():
 
     logger.info("Optimal Objective Values:")
     for id, val in enumerate(optimal_objective_values):
-        logger.info(f"id:{id}, loss={val[0]:.4f}, latency={val[1]:.1f}ms, MACs={val[2]:.1f}G")
+        logger.info(f"id:{id}, box_mAP={1.0 - val[0]:.4f}, latency={val[1]:.1f}ms, MACs={val[2]:.1f}G")
 
     logger.info("Optimal Config:")
     for id, conf in enumerate(optimal_solutions):
