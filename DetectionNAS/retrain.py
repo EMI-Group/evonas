@@ -145,7 +145,8 @@ def main_worker(gpu, ngpus_per_node, args, cfg):
         logger.info("== Use GPU: {} for training".format(args.gpu))
 
     if not args.multiprocessing_distributed or (args.multiprocessing_distributed and args.rank % ngpus_per_node == 0):
-        logger.info('args: '+str(args))
+        logger.info("===== Args Begin =====\n%s\n===== Args End =====", vars(args))
+        logger.info("===== Config Begin =====\n%s\n===== Config End =====", cfg.pretty_text)
 
     cfg.model.backbone.selected_config  = {
         'mlp_ratio': args.mlp_ratio,
