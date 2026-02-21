@@ -113,7 +113,7 @@ def main():
 
     print(json.dumps(results))
 
-# CUDA_VISIBLE_DEVICES=4 python DetectionNAS/sub_test_latency.py --config_file /data/code_yzh/DistillNAS/tmp/tmpabcd_GPU0.json --base_config DetectionNAS/configs/mask_rcnn_DAMamba_fpn_1x_coco.py
+# CUDA_VISIBLE_DEVICES=4 python DetectionNAS/sub_test_latency.py --config_file ./tmp/tmpabcd_GPU0.json --base_config DetectionNAS/configs/evo_mamba/mask_rcnn_evomamba_1x_coco.py
 
 if __name__ == "__main__":
     main()

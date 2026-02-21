@@ -25,7 +25,7 @@ from DetectionNAS.networks import model
 from search_space import MambaSearchSpace
 from torch.amp import autocast, GradScaler
 
-from supernet_pool import ArchitecturePool
+# from supernet_pool import ArchitecturePool
 from utils import build_iter_lambda_scheduler
 from mmdet.registry import MODELS, METRICS  
 from mmengine.evaluator import Evaluator

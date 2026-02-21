@@ -7,7 +7,7 @@ DetectionNAS/configs/dinov2/depth_anything_large_mask-rcnn_coco.py
 --learning_rate 1e-5
 --weight_decay 0.05
 --max_norm -1
---log_directory ./runs/coco/02_retrain/run_base/
+--log_directory ./runs/coco/02_retrain_full_search/run_base/
 --multiprocessing_distributed
 --dist_url tcp://127.0.0.1:2372
 --devices 0,1,2,3,4,5,6,7
@@ -15,10 +15,10 @@ DetectionNAS/configs/dinov2/depth_anything_large_mask-rcnn_coco.py
 --log_freq 2000
 --do_online_eval
 
---mlp_ratio "[3.5, 1.0, 3.5, 2.0]"
---d_state "[16, 16, 16]"
---ssd_expand "[2, 2, 4]"
---depth "[[0, 1], [1, 1, 1, 0], [1, 1, 1, 0, 1, 1, 0, 1], [1, 0, 1, 1]]"
+--mlp_ratio "[4.0, 1.0, 4.0, 3.0]"
+--d_state "[16, 16, 48]"
+--ssd_expand "[3, 3, 4]"
+--depth "[[1, 0], [1, 1, 1, 0], [1, 1, 0, 1, 1, 1, 0, 1], [1, 0, 1, 1]]"
 
 --ckpt_path /data/code_yzh/DistillNAS/runs/coco/00_train/FT_supernet_coco/07_best_bbox_mAP.pth
 

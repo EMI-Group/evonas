@@ -80,6 +80,6 @@ def main():
 
     print(json.dumps(results))
 
-
+# CUDA_VISIBLE_DEVICES=5 python MambaDepthNAS/sub_test_latency.py --config_file ./tmp/tmpabcd_GPU0.json --dataset nyu
 if __name__ == "__main__":
     main()

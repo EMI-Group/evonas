@@ -190,3 +190,74 @@ sh whole_run_kitti.sh
 2. fine-tune supernet on object datasets(e.g. KITTI);
 3. NAS search by evolution;
 4. retrain the searched network;
+
+
+## Command
+
+#### NYU Depth v2
+
+fine-tune supernet
+```
+sh scripts/whole_run_nyu.sh
+```
+
+NAS search
+```
+python MambaDepthNAS/search.py configs/search/search_nyu.txt 
+```
+
+Retrain
+```
+python MambaDepthNAS/retrain.py configs/retrain_nyu.txt
+```
+
+#### KITTI
+
+fine-tune supernet
+```
+sh scripts/whole_run_kitti.sh
+```
+
+NAS search
+```
+python MambaDepthNAS/search.py configs/search/search_kitti.txt 
+```
+
+Retrain
+```
+python MambaDepthNAS/retrain.py configs/retrain_kitti.txt
+```
+
+#### ADE20K
+
+fine-tune supernet
+```
+sh scripts/segment/supernet_steptrain_ade20k.sh
+```
+
+NAS search
+```
+python SegmentNAS/search.py SegmentNAS/configs/01_search/search_ade20k.txt
+```
+
+Retrain
+```
+python SegmentNAS/retrain.py SegmentNAS/configs/02_retrain/retrain_supernet_base.txt
+```
+
+#### COCO
+
+fine-tune supernet
+```
+sh scripts/detection/supernet_steptrain.sh
+```
+
+NAS search
+```
+python DetectionNAS/search.py DetectionNAS/configs/01_search/search_coco.txt 
+```
+
+Retrain
+```
+python DetectionNAS/retrain.py DetectionNAS/configs/02_retrain/retrain_supernet_base.txt
+```

@@ -25,7 +25,7 @@ from SegmentNAS.networks import model
 from search_space import MambaSearchSpace
 from torch.amp import autocast, GradScaler
 
-from supernet_pool import ArchitecturePool
+# from supernet_pool import ArchitecturePool
 from utils import build_iter_lambda_scheduler, build_iter_poly_scheduler, pad_to_divisor_rb, crop_like, pad_inputs_and_sync_metas_to_divisor
 from SegmentNAS.networks.depth_anything import dinov2
 from mmengine.registry import MODELS 

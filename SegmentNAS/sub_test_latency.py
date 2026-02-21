@@ -81,7 +81,7 @@ def main():
     cfg = Config.fromfile(args.base_config)
     # print("Parsed dict:", config_list)
 
-    input_shape = (1,3,512,512)  # ade20k
+    input_shape = (1,3,512,2048)  # ade20k
 
     results = []
     for config in config_list:
@@ -106,7 +106,7 @@ def main():
 
     print(json.dumps(results))
 
-# CUDA_VISIBLE_DEVICES=5 python SegmentNAS/sub_test_latency.py --config_file ./tmp/tmpabcd_GPU0.json --base_config SegmentNAS/configs/upernet/upernet_evom_4xb4-160k_ade20k-512x512_fpn.py
+# CUDA_VISIBLE_DEVICES=4 python SegmentNAS/sub_test_latency.py --config_file ./tmp/tmpabcd_GPU0.json --base_config SegmentNAS/configs/upernet/upernet_evom_4xb4-160k_ade20k-512x512_fpn.py
 
 if __name__ == "__main__":
     main()
