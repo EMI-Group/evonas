@@ -18,25 +18,23 @@ def parse_args():
 def test_throughput(model, input_shape=(1,3,224,224), device='cuda', warmup=100, repeat=500, batch_size=8):
     """
     Test model throughput (images/second).
-    batch_size=8, AMP autocast, median-based timing (consistent with throughput.py).
+    batch_size=8, median-based timing (consistent with throughput.py).
     """
     model.eval()
     input_tensor = torch.randn(batch_size, *input_shape[1:]).to(device)
 
     # warmup
-    with torch.cuda.amp.autocast():
-        for _ in range(warmup):
-            _ = model(input_tensor)
+    for _ in range(warmup):
+        _ = model(input_tensor)
     torch.cuda.synchronize()
 
     # measure with per-iteration timing
     timer = []
-    with torch.cuda.amp.autocast():
-        for _ in range(repeat):
-            tic = time.time()
-            _ = model(input_tensor)
-            torch.cuda.synchronize()
-            timer.append(time.time() - tic)
+    for _ in range(repeat):
+        tic = time.time()
+        _ = model(input_tensor)
+        torch.cuda.synchronize()
+        timer.append(time.time() - tic)
 
     throughput = int(batch_size / np.median(timer))  # images per second
 

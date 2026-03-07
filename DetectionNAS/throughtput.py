@@ -66,10 +66,10 @@ def test_throughput_macs(
     model,
     input_shape=(1, 3, 800, 1280),
     device='cuda',
-    warmup=100,
-    repeat=500,
+    warmup=10,
+    repeat=100,
     batch_size=8,
-    use_amp=True,
+    use_amp=False,
 ):
     """
     Throughput test for mmdet model (images/sec), keeping model/config intact.

@@ -43,10 +43,10 @@ def test_throughput_macs(
     model,
     input_shape=(1, 3, 512, 512),
     device='cuda',
-    warmup=100,
-    repeat=500,
+    warmup=20,
+    repeat=100,
     batch_size=8,
-    use_amp=True,
+    use_amp=False,
 ):
     """
     Throughput test for mmseg model (images/sec), keeping model/config intact.

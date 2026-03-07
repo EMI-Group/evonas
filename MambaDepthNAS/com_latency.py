@@ -30,6 +30,12 @@ parser.add_argument('--dataset',                   type=str,   help='dataset to 
 # parser.add_argument('--input_width',               type=int,   help='input width',  default=1216)
 parser.add_argument('--width_multiplier',            type=float,  default=1.0)
 
+parser.add_argument('--latency_warmup',            type=int,   default=50)
+parser.add_argument('--latency_repeat',            type=int,   default=100)
+parser.add_argument('--throughput_bs',             type=int,   default=8)
+parser.add_argument('--throughput_warmup',         type=int,   default=20)
+parser.add_argument('--throughput_repeat',         type=int,   default=100)
+
 
 
 
@@ -42,35 +48,78 @@ else:
 
 @torch.no_grad()
 def latency_test(model, input_shape=(1,3,224,224), device='cuda', warmup=50, repeat=100):
+    """
+    Latency test: fixed BS=1 (input_shape should already have batch=1).
+    Returns: avg_latency_ms, fps (images/s), max_mem_MB
+    """
     model.eval()
-    input_tensor = torch.randn(*input_shape).to(device)
+    assert input_shape[0] == 1, f"Latency test expects batch=1, got {input_shape[0]}"
+    x = torch.randn(*input_shape, device=device)
 
     # warmup
     for _ in range(warmup):
-        _ = model(input_tensor)
+        _ = model(x)
     torch.cuda.synchronize()
 
     # measure
     torch.cuda.reset_peak_memory_stats()
-    tic1 = time.time()
+    tic1 = time.perf_counter()
     for _ in range(repeat):
-        _ = model(input_tensor)
+        _ = model(x)
     torch.cuda.synchronize()
-    tic2 = time.time()
+    tic2 = time.perf_counter()
 
-    total_time = (tic2 - tic1)
-    avg_latency = total_time / repeat * 1000  # ms
-    fps = repeat / total_time
-
-    max_mem = torch.cuda.max_memory_allocated() / 1024 / 1024
+    total_time = tic2 - tic1
+    avg_latency_ms = (total_time / repeat) * 1000.0
+    fps = repeat / total_time  # images/s since bs=1
+    max_mem_mb = torch.cuda.max_memory_allocated() / 1024 / 1024
 
     print(f"[Latency Test]")
     print(f"Input shape: {input_shape}")
-    print(f"Average latency: {avg_latency:.3f} ms")
-    print(f"FPS: {fps:.2f}")
-    print(f"Max memory allocated: {max_mem:.2f} MB")
+    print(f"Warmup: {warmup}, Repeat: {repeat}")
+    print(f"Average latency: {avg_latency_ms:.3f} ms")
+    print(f"FPS (bs=1): {fps:.2f} images/s")
+    print(f"Max memory allocated: {max_mem_mb:.2f} MB")
 
-    return avg_latency, fps
+    return avg_latency_ms, fps, max_mem_mb
+
+
+@torch.no_grad()
+def throughput_test(model, input_shape=(1,3,224,224), batch_size=8, device='cuda', warmup=20, repeat=100):
+    """
+    Throughput test: configurable BS (default=8).
+    Measures images/s = (repeat * batch_size) / total_time.
+    Returns: throughput_images_per_s, max_mem_MB
+    """
+    model.eval()
+    assert batch_size >= 1
+    bs_shape = (batch_size, *input_shape[1:])
+    x = torch.randn(*bs_shape, device=device)
+
+    # warmup
+    for _ in range(warmup):
+        _ = model(x)
+    torch.cuda.synchronize()
+
+    # measure
+    torch.cuda.reset_peak_memory_stats()
+    tic1 = time.perf_counter()
+    for _ in range(repeat):
+        _ = model(x)
+    torch.cuda.synchronize()
+    tic2 = time.perf_counter()
+
+    total_time = tic2 - tic1
+    throughput = (repeat * batch_size) / total_time  # images/s
+    max_mem_mb = torch.cuda.max_memory_allocated() / 1024 / 1024
+
+    print(f"[Throughput Test]")
+    print(f"Input shape: {bs_shape}")
+    print(f"Warmup: {warmup}, Repeat: {repeat}")
+    print(f"Throughput: {throughput:.2f} images/s")
+    print(f"Max memory allocated: {max_mem_mb:.2f} MB")
+
+    return throughput, max_mem_mb
 
 def main_worker(args):
 
@@ -168,10 +217,33 @@ def main_worker(args):
 
     # ===== Evaluation ======
     model.eval()
-    latency_test(model, input_shape)
 
-    macs, params = get_model_complexity_info(model, tuple(input_shape[1:]), as_strings=False, backend='pytorch', print_per_layer_stat=False)
+    # latency (bs=1)
+    lat_ms, lat_fps, lat_mem = latency_test(
+        model,
+        input_shape=input_shape,
+        device='cuda',
+        warmup=args.latency_warmup,
+        repeat=args.latency_repeat
+    )
+
+    # throughput (bs configurable)
+    thr, thr_mem = throughput_test(
+        model,
+        input_shape=input_shape,
+        batch_size=args.throughput_bs,
+        device='cuda',
+        warmup=args.throughput_warmup,
+        repeat=args.throughput_repeat
+    )
+
+    macs, params = get_model_complexity_info(
+        model, tuple(input_shape[1:]),
+        as_strings=False, backend='pytorch', print_per_layer_stat=False
+    )
     print(f'macs: {macs/1e9}G, params: {params/1e6}M')
+
+    print(f'[Summary] latency={lat_ms:.3f} ms, fps(bs=1)={lat_fps:.2f}, throughput(bs={args.throughput_bs})={thr:.2f} images/s')
 
 
 def main():
