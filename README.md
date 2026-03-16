@@ -1,263 +1,172 @@
-# EvoXNAS
+<h1 align="center">
+  <a href="https://github.com/EMI-Group/evox">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="./assets/evox_brand_light.svg">
+    <source media="(prefers-color-scheme: light)" srcset="./assets/evox_brand_dark.svg">
+    <img alt="EvoX Logo" height="128" width="500px" src="./assets/evox_brand_dark.svg">
+  </picture>
+  </a>
+  <br>
+</h1>
+</div>
 
-Using **Once-for-All Progressive Shrinking**
+---
 
-------
+## Introduction
 
-## Requirements
+Modern computer vision tasks require a delicate balance between predictive accuracy and real-time efficiency, but the substantial inference cost of large vision models (LVMs) notably restricts their deployment on resource-constrained edge devices. EvoNAS addresses this by introducing a highly efficient, multi-objective evolutionary architecture search framework. To overcome the severe representation collapse and ranking inconsistency typical in conventional weight-sharing paradigms, EvoNAS utilizes a hybrid Vision State Space and Vision Transformer (VSS-ViT) supernet optimized via the Progressive Supernet Training (PST) strategy. This is further stabilized by a novel Cross-Architecture Dual-Domain Knowledge Distillation (CA-DDKD) approach, which aligns features in both spatial and frequency domains using DCT constraints to lock in high-frequency geometric priors. Evaluated through a hardware-isolated Distributed Multi-Model Parallel Evaluation (DMMPE) engine that eliminates computational noise, the resulting EvoNets establish Pareto-optimal trade-offs, demonstrating robust generalizability from 2D dense prediction to high-fidelity 3D rendering tasks like 3D Gaussian Splatting.
 
-```
-conda create -n EvoXNAS python=3.10
-conda activate EvoXNAS
+---
 
-conda install pytorch==2.4.1 torchvision==0.19.1 torchaudio==2.4.1  pytorch-cuda=11.8 -c pytorch -c nvidia
+## Key Features
 
-# download from https://github.com/state-spaces/mamba/releases
-pip install [/**/mamba_ssm-2.2.4+cu11torch2.4cxx11abiFALSE-cp310-cp310-linux_x86_64.whl]
+- 🔬 **Hybrid VSS-ViT Search Space**: Combines linear-time Vision State Space (VSS) modules for local geometric feature capture with Vision Transformer (ViT) modules for global semantic reasoning.
+- ⚡ **Progressive Supernet Training (PST)**: A curriculum-learning strategy that expands from maximum-capacity configurations to compact variants, ensuring a smooth fitness landscape and stable supernet convergence.
+- 🧠 **CA-DDKD Strategy**: Cross-Architecture Dual-Domain Knowledge Distillation using DCT constraints to mitigate representation collapse and preserve high-frequency geometric priors across both spatial and frequency domains.
+- 🚀 **DMMPE Framework**: A hardware-isolated distributed evaluation engine with GPU resource pooling and asynchronous scheduling, eliminating latency jitter during parallel architecture evaluation.
+- 🌐 **Universal Geometric Transferability**: Generalizes across COCO, ADE20K, KITTI/NYU v2, and 3D Gaussian Splatting without task-specific design changes.
 
-pip install timm==0.4.12
-pip install fvcore
-pip install tensorboardX
-pip install mmcv==2.2.0
+---
 
-pip install Cython==3.0.12
-# donwload from https://github.com/EdwardChasel/Spatial-Mamba
+## Results
+
+> 🔬 This project accompanies a paper currently under review. Quantitative results and pre-trained model weights will be released upon acceptance.
+
+---
+
+## Installation
+
+> [!WARNING]
+> Mamba SSM requires a prebuilt CUDA wheel that must match your exact Python, CUDA, and PyTorch versions. Download the appropriate `.whl` from the [Mamba releases page](https://github.com/state-spaces/mamba/releases) before proceeding.
+
+```bash
+# 1. Create environment
+conda create -n EvoNAS python=3.10 -y && conda activate EvoNAS
+
+# 2. Install PyTorch (CUDA 11.8)
+conda install pytorch==2.4.1 torchvision==0.19.1 torchaudio==2.4.1 \
+    pytorch-cuda=11.8 -c pytorch -c nvidia -y
+
+# 3. Install Mamba SSM (replace with your downloaded wheel path)
+pip install /path/to/mamba_ssm-2.2.4+cu11torch2.4cxx11abiFALSE-cp310-cp310-linux_x86_64.whl
+
+# 4. Install Spatial-Mamba kernel (source: https://github.com/EdwardChasel/Spatial-Mamba)
 cd kernels/selective_scan && pip install .
+cd kernels/dwconv2d && pip install .
 
-pip install numpy==2.0.1
-pip install scipy==1.15.2
+# 5. Install remaining dependencies
+pip install timm==0.4.12 fvcore tensorboardX mmcv==2.2.0 \
+            numpy==2.0.1 scipy==1.15.2 pymoo==0.6.1.3 \
+            ptflops==0.7.4 pandas Cython==3.0.12
 
-pip install pymoo==0.6.1.3
-pip install ptflops==0.7.4
-pip install pandas
-
-# for object detection task
-pip install mmdet==3.3.0
-
-# for semantic segmentation task
-pip install mmsegmentation==1.2.2
-pip install ftfy==6.3.1
+# 6. Task-specific toolkits (install as needed)
+pip install mmdet==3.3.0           # Object Detection
+pip install mmsegmentation==1.2.2 ftfy==6.3.1  # Semantic Segmentation
 ```
 
-##  Update Logs
+---
 
-2025/4/11 update SuperNet(Mamba) and Search Space
+## Data Preparation
 
-2025/4/15 update NAS Search(Optimize d1 and params)
-
-2025/6/27 update SuperNet Fine-tuning(Training strategy, Only sample one layer per stage, ...)
-
-2025/7/5 update SuperNet Fine-tuning(Training strategy, Open Depth space, Code encode-decode, Teacher model fixed)
-
-2025/7/7 update SuperNet Fine-tuning(Add CAP and DFM of scaleKD)
-
-2025/7/8 update SuperNet Fine-tuning(Change supernet depth to [8,8,8,8], Pretrained weights and sample code)
-
-2025/7/9 update SuperNet Fine-tuning(final)(Depth 01bit code, Script of whole run)
-
-2025/7/10 update SuperNet Fine-tuning(final)(Recover supernet depth to [2,4,8,4], Add run_script on nyu, Solve some bugs)
-
-2025/7/15 update NAS Search(Optimize Abs_rel, Latency and MACs, Special corssover and mutation for mixed code, Check any stage is all zeros, Accelerate the verification process)
-
-2025/7/17 update NAS Search(Subprocess to test latency, Sovle GPU memory bug v1 by `save_history=False`)
-
-2025/7/18 update NAS Search(Fixed GPU memory bug v2 by `group=None` , Accelerate evaluation by `persistent_workers=True`, Centralized processing of latency testing)
-
-2025/7/20 update Retrain(Only train by supernet)
-
-2025/7/23 update tools(Calculate HV, Visualized evolution curve)
-
-2025/7/31 update NAS Search(Parallel model validation, Mutil-GPUs latency test, Fix process hanging issue)
-
-2025/8/13 update Retrain(Support variable width)
-
-2025/8/14 update Retrain(Support mixed precision training)
-
-2025/8/19 update Retrain(Support other encoders for compaper, e.g. ConvNeXt, EfficientNet, SwinTransformer, MambaVision, MLLA)
-
-2025/8/21 update SuperNet Fine-tuning(Support mixed precision training)
-
-2025/8/25 update SuperNet Fine-tuning(Support init weights by remapping pretrained weights)
-
-2025/9/2 update NAS Search(Change search space code order)
-
-2025/9/26 update Retrain(Support new decoders e.g. NewCRFs,iDisc,VMamba and solved weight BUG)
-
-2025/9/30 update Retrain(Support neck module choices e.g. PPM, SP and None)
-
-2025/10/24 update Object Detection support (supernet training, NAS search, retraining all compatible)
-
-2025/10/29 update Semantic Segmentation support (supernet training, NAS search, retraining all compatible)
-
-2025/11/1 update SuperNet Fine-tuning (support training supernet by architecture pool)
-
-2025/11/7 update Semantic Segmentation tearcher network (r101-upernet replaced DepthAnything)
-
-2025/11/9 update SuperNet Training (fixed bug of architecture pool)
-
-2025/12/15 update SuperNet Training (for Detection and Segment, e.g. SyncBN, teacher model, hyper param)
-
-2025/12/22 update SuperNet Training (for Detection and Segment, mamba-based FPN)
-
-2025/12/23 update SuperNet Training (update tearcher model for Detection ———— mask2former, mIoU=83.65)
-
-2026/1/6 update SuperNet Training (Segmentation training by iter)
-
-2026/1/8 update SuperNet Training (Segmentation Distillation through dynamic resolution, add DepthAnything v1 teacher for ADE20K)
-
-2026/1/9 update SuperNet Training (Add semantic segmentation head distillation)
-
-2026/1/12 update SuperNet Training (Add Mask R-CNN bbox head distillation)
-
-2026/1/20 update SuperNet Training (Fix detection freq_loss nan)
-
-2026/1/24 update Segmentation Search (Fix latency config for ade20k)
-
-------
-
-##  Search Space
+Download the datasets and organize them as follows. Pre-defined train/test split files are provided in `data_splits/`.
 
 ```
-MLP_RATIO:   [0.5, 1.0, 2.0, 3.0, 3.5, 4.0]
-D_STATE:     [16, 32, 48, 64] 
-SSD_EXPAND:  [0.5, 1, 2, 3, 4]
+data/
+├── NYU_Depth_V2/
+│   ├── sync/              ← training RGB-D frames
+│   └── test/              ← test images
+├── KITTI/
+│   ├── raw/               ← raw KITTI sequences
+│   └── depth/             ← ground-truth depth maps
+├── coco/
+│   ├── train2017/
+│   ├── val2017/
+│   └── annotations/
+└── ADEChallengeData2016/  ← ADE20K
+    ├── images/
+    └── annotations/
 ```
 
-------
+> [!NOTE]
+> Update `--data_path` and `--gt_path` in the relevant config files under `configs/` to point to your local data directories before running any scripts.
 
-##  Train Piplines
+---
 
-```
-configs/prog_shrink
-├── supernet_train_kitti_0_maxnet.txt   # Step 0: max network
-├── supernet_train_kitti_1_state_1.txt  # Step 1: relax D_STATE=[48, 64]
-├── supernet_train_kitti_2_state_2.txt  # Step 2: relax D_STATE=[16, 32, 48, 64]
-├── supernet_train_kitti_3_mlp_1.txt    # Step 3: relax MLP_RATIO=[3.0, 3.5, 4.0]
-├── supernet_train_kitti_4_mlp_2.txt    # Step 4: relax MLP_RATIO=[0.5, 1.0, 2.0, 3.0, 3.5, 4.0]
-├── supernet_train_kitti_5_ssd_1.txt    # Step 5: relax SSD_EXPAND=[2, 3, 4]
-├── supernet_train_kitti_6_ssd_2.txt    # Step 6: relax SSD_EXPAND=[0.5, 1, 2, 3, 4]
-├── supernet_train_kitti_7_depth.txt    # Step 7: relax free Depth
-```
+## Quickstart
 
-#### start run
+> [!NOTE]
+> Stage 1 requires the ImageNet-1k pretrained supernet weights (`vssd_supernet_imagenet_1k.pth`). **Download link coming soon.** Place the file in the project root before fine-tuning.
 
-```
-sh whole_run_kitti.sh
+EvoNAS follows a four-stage pipeline: **(1)** pretrain the supernet on ImageNet-1k, **(2)** fine-tune it on the target dataset using the PST strategy, **(3)** run the multi-objective evolutionary search, and **(4)** retrain the discovered subnet.
+
+**KITTI (example)**
+
+```bash
+sh scripts/whole_run_kitti.sh                                   # PST fine-tuning (all 8 steps)
+python MambaDepthNAS/search.py configs/search/search_kitti.txt  # evolutionary search
+python MambaDepthNAS/retrain.py configs/retrain_kitti.txt       # retrain
 ```
 
-------
+<details>
+<summary>Commands for all supported tasks</summary>
 
-## TODO
-- [x] Search Space (VSSD)
-    - [x] add choose (MLP_RATIO, D_STATE, SSD_EXPAND)
-- [x] Pretrain Training strategy on IN-1k
-- [x] Loading pretrained weight (encoder, decoder, ema)
-- [x] SuperNet Fine-tuning
-    - [x] encoder-decoder lr, warmup lr, optimizer
-    - [ ] ~~ema, Gradient Accumulation, amp~~
-    - [x] ~~Only sample one layer per stage~~
-    - [x] ~~One batch train multiple SubNet~~
-    - [ ] ~~Update SuperNet by Fedavg~~
-    - [ ] ~~Parallel train SubNet~~
-    - [x] Knowledge Distillation (bug fixed)
-    - [x] add new kd strategy (part1 and part2 of scaleKD)
-    - [x] ~~Change supernet depth to [8,8,8,8] and pretrained weights~~
-    - [x] add mixed precision (AMP)
-- [x] NAS Search (pymoo, param_cal)
-    - [x] add depth choose ~~or only one layer~~
-    - [ ] ~~recompute the Params and FLOP of subnet~~
-    - [x] optimization extra objectives (Latency and MAC)
-    - [x] crossover and mutation separate mixed code
-    - [x] open batch size > 1 for val
-    - [x] use subprocess to test latency
-    - [x] save_history set False to solve abnormal increase in GPU memory (add EvolutionLogger to replace)
-    - [x] parallel evaluation(25% speed up or 60% speed up without persistent_workers)
-    - [x] add GIFs images that display the evolutionary trajectory
-    - [x] add method NSGA-III
-    - [x] mutil-GPU latency test(the number of GPUs speed up)
-- [x] Retrain
-    - [x] build selected network by searched arch code
-    - [ ] ~~load and map weight from supernet~~
-    - [x] fixed dis_modules_s4 weight loading(not helpful)
-    - [x] add mixed precision (AMP)
-    - [x] add other encoders (CNN,ViT,Mamba)
-- [x] Extended to Object Detection task
-- [x] Extended to Semantic Segmentation task
-------
-
-## Pipline
-1. pretrain supernet on ImageNet-1k (only Once);
-2. fine-tune supernet on object datasets(e.g. KITTI);
-3. NAS search by evolution;
-4. retrain the searched network;
-
-
-## Command
-
-#### NYU Depth v2
-
-fine-tune supernet
-```
+**NYU Depth v2**
+```bash
 sh scripts/whole_run_nyu.sh
-```
-
-NAS search
-```
-python MambaDepthNAS/search.py configs/search/search_nyu.txt 
-```
-
-Retrain
-```
+python MambaDepthNAS/search.py configs/search/search_nyu.txt
 python MambaDepthNAS/retrain.py configs/retrain_nyu.txt
 ```
 
-#### KITTI
-
-fine-tune supernet
-```
-sh scripts/whole_run_kitti.sh
-```
-
-NAS search
-```
-python MambaDepthNAS/search.py configs/search/search_kitti.txt 
+**COCO Object Detection**
+```bash
+sh scripts/detection/supernet_steptrain.sh
+python DetectionNAS/search.py DetectionNAS/configs/01_search/search_coco.txt
+python DetectionNAS/retrain.py DetectionNAS/configs/02_retrain/retrain_supernet_base.txt
 ```
 
-Retrain
-```
-python MambaDepthNAS/retrain.py configs/retrain_kitti.txt
-```
-
-#### ADE20K
-
-fine-tune supernet
-```
+**ADE20K Semantic Segmentation**
+```bash
 sh scripts/segment/supernet_steptrain_ade20k.sh
-```
-
-NAS search
-```
 python SegmentNAS/search.py SegmentNAS/configs/01_search/search_ade20k.txt
-```
-
-Retrain
-```
 python SegmentNAS/retrain.py SegmentNAS/configs/02_retrain/retrain_supernet_base.txt
 ```
 
-#### COCO
+</details>
 
-fine-tune supernet
+---
+
+## Project Structure
+
 ```
-sh scripts/detection/supernet_steptrain.sh
+EvoNAS/
+├── MambaDepthNAS/          # Monocular depth estimation module
+│   ├── train.py            #   PST supernet fine-tuning
+│   ├── search.py           #   NSGA-II/III evolutionary search
+│   ├── retrain.py          #   Subnet retraining
+│   ├── networks/           #   VSS-ViT encoder + decoder variants
+│   └── distillation/       #   CA-DDKD (spatial + frequency KD)
+├── DetectionNAS/           # Object detection (MMDetection)
+├── SegmentNAS/             # Semantic segmentation (MMSegmentation)
+├── configs/                # PST, search, and retrain configs
+├── scripts/                # End-to-end shell scripts per dataset
+├── data_splits/            # Official train/test split file lists
+└── tools/                  # Visualization (evolution curve, HV, det/seg)
 ```
 
-NAS search
-```
-python DetectionNAS/search.py DetectionNAS/configs/01_search/search_coco.txt 
-```
+---
 
-Retrain
-```
-python DetectionNAS/retrain.py DetectionNAS/configs/02_retrain/retrain_supernet_base.txt
-```
+## Acknowledgements
+
+EvoNAS builds on a strong ecosystem of open-source tools. We are grateful to the teams behind [PyTorch](https://pytorch.org/), [Mamba SSM](https://github.com/state-spaces/mamba), [Spatial-Mamba](https://github.com/EdwardChasel/Spatial-Mamba), [MMDetection](https://github.com/open-mmlab/mmdetection), [MMSegmentation](https://github.com/open-mmlab/mmsegmentation), [pymoo](https://github.com/anyoptimization/pymoo), and [timm](https://github.com/huggingface/pytorch-image-models) for making this work possible.
+
+---
+
+## License
+
+This project is licensed under the **MIT License** — see the [LICENSE](LICENSE) file for details.
+
+---
+
+<div align="center">
+<sub>⭐ If you find this project helpful, please consider giving it a star.</sub>
+</div>
