@@ -163,7 +163,7 @@ EvoNAS builds on a strong ecosystem of open-source tools. We are grateful to the
 
 ## License
 
-This project is licensed under the **MIT License** — see the [LICENSE](LICENSE) file for details.
+EvoNAS 遵循 **GNU 通用公共许可证 3.0 (GPL-3.0)** 进行授权。完整的条款和条件请参阅 [LICENSE](./LICENSE) 文件。
 
 ---
 
