@@ -10,7 +10,12 @@
 </h1>
 </div>
 
----
+<p align="center">
+  <a href="https://arxiv.org/abs/2603.19563">
+    <img src="https://img.shields.io/badge/paper-arxiv-red?style=for-the-badge" alt="EvoNAS Paper on arXiv">
+  </a>
+</p>
+
 
 ## Introduction
 
