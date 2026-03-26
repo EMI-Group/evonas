@@ -14,6 +14,9 @@
   <a href="https://arxiv.org/abs/2603.19563">
     <img src="https://img.shields.io/badge/paper-arxiv-red?style=for-the-badge" alt="EvoNAS Paper on arXiv">
   </a>
+  <a href="https://huggingface.co/kujimili/EvoNAS">
+    <img src="https://img.shields.io/badge/🤗-Model_Weights-yellow?style=for-the-badge" alt="HuggingFace">
+  </a>
 </p>
 
 
