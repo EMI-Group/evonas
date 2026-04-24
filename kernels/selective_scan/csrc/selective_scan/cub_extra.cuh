@@ -1,7 +1,7 @@
 // WarpMask is copied from /usr/local/cuda-12.1/include/cub/util_ptx.cuh
 // PowerOfTwo is copied from /usr/local/cuda-12.1/include/cub/util_type.cuh
 
-#pragma once
+// #pragma once
 
 #include <cub/util_type.cuh>
 #include <cub/util_arch.cuh>

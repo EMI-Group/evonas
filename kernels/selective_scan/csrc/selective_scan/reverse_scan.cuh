@@ -2,7 +2,7 @@
  * Copyright (c) 2023, Tri Dao.
  ******************************************************************************/
 
-#pragma once
+// #pragma once
 
 #include <cub/config.cuh>
 
